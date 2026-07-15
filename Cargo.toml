@@ -1,12 +1,12 @@
 [package]
 name = "wonderdraft-editor"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 description = "Native Rust editor for Wonderdraft map files with SVG interchange"
 license = "MIT"
 
 [dependencies]
-eframe = "0.35.0"
+eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
 flate2 = "1.1.9"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 png = "0.18.1"
@@ -20,4 +20,3 @@ url = "2.5.8"
 [profile.release]
 lto = "thin"
 strip = true
-

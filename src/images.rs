@@ -7,46 +7,93 @@ use std::{
 };
 
 pub type Images = Vec<(String, Value)>;
+pub type BinaryBlobs = Vec<(String, Value)>;
+
+#[derive(Debug)]
+pub struct PreparedTree {
+    pub editable: Value,
+    pub images: Images,
+    pub binary_blobs: BinaryBlobs,
+}
 
 pub fn find(root: &Value) -> Images {
-    let mut out = Vec::new();
-    walk(root, &mut Vec::new(), &mut out);
-    out
+    prepare(root).images
 }
-fn walk(v: &Value, path: &mut Vec<String>, out: &mut Images) {
+
+pub fn prepare(root: &Value) -> PreparedTree {
+    let mut images = Vec::new();
+    let mut binary_blobs = Vec::new();
+    let editable = prepare_value(root, &mut Vec::new(), &mut images, &mut binary_blobs);
+    PreparedTree {
+        editable,
+        images,
+        binary_blobs,
+    }
+}
+
+fn prepare_value(
+    v: &Value,
+    path: &mut Vec<String>,
+    images: &mut Images,
+    binary_blobs: &mut BinaryBlobs,
+) -> Value {
+    let joined = path.join(".");
     if image_info(v).is_some() {
-        out.push((path.join("."), v.clone()));
-        return;
+        images.push((joined, v.clone()));
+        let leaf = path.last().map(String::as_str).unwrap_or("image");
+        return Value::String(format!(".{leaf}.png"));
     }
     match v {
-        Value::Dictionary(d) => {
-            for (k, v) in d {
-                path.push(
-                    k.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| crate::godot_text::format(k)),
-                );
-                walk(v, path, out);
-                path.pop();
+        Value::PoolByteArray(source) if matches!(source, ByteSource::File { .. }) => {
+            binary_blobs.push((joined.clone(), v.clone()));
+            Value::PoolByteArrayRef {
+                path: joined,
+                len: source.len(),
             }
         }
-        Value::Array(a) => {
-            for (i, v) in a.iter().enumerate() {
-                path.push(i.to_string());
-                walk(v, path, out);
-                path.pop();
+        Value::Dictionary(d) => Value::Dictionary(
+            d.iter()
+                .map(|(k, v)| {
+                    path.push(
+                        k.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| crate::godot_text::format(k)),
+                    );
+                    let converted = prepare_value(v, path, images, binary_blobs);
+                    path.pop();
+                    (k.clone(), converted)
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    path.push(i.to_string());
+                    let converted = prepare_value(v, path, images, binary_blobs);
+                    path.pop();
+                    converted
+                })
+                .collect(),
+        ),
+        Value::Object { class, properties } => {
+            path.push("properties".into());
+            let converted = properties
+                .iter()
+                .map(|(key, value)| {
+                    path.push(key.clone());
+                    let value = prepare_value(value, path, images, binary_blobs);
+                    path.pop();
+                    (key.clone(), value)
+                })
+                .collect();
+            path.pop();
+            Value::Object {
+                class: class.clone(),
+                properties: converted,
             }
         }
-        Value::Object { properties, .. } => {
-            for (k, v) in properties {
-                path.push("properties".into());
-                path.push(k.clone());
-                walk(v, path, out);
-                path.pop();
-                path.pop();
-            }
-        }
-        _ => {}
+        _ => v.clone(),
     }
 }
 
@@ -54,7 +101,66 @@ pub fn placeholders(root: &Value, images: &Images) -> Value {
     replace(root, images, &mut Vec::new(), false)
 }
 pub fn restore(root: &Value, images: &Images) -> Value {
-    replace(root, images, &mut Vec::new(), true)
+    restore_external(root, images, &Vec::new())
+}
+
+pub fn restore_external(root: &Value, images: &Images, binary_blobs: &BinaryBlobs) -> Value {
+    restore_value(root, images, binary_blobs, &mut Vec::new())
+}
+
+fn restore_value(v: &Value, images: &Images, blobs: &BinaryBlobs, path: &mut Vec<String>) -> Value {
+    let joined = path.join(".");
+    if let Some((_, image)) = images.iter().find(|(p, _)| p == &joined) {
+        return image.clone();
+    }
+    if let Some((_, blob)) = blobs.iter().find(|(p, _)| p == &joined) {
+        return blob.clone();
+    }
+    match v {
+        Value::Dictionary(d) => Value::Dictionary(
+            d.iter()
+                .map(|(key, value)| {
+                    path.push(
+                        key.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| crate::godot_text::format(key)),
+                    );
+                    let value = restore_value(value, images, blobs, path);
+                    path.pop();
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    path.push(index.to_string());
+                    let value = restore_value(value, images, blobs, path);
+                    path.pop();
+                    value
+                })
+                .collect(),
+        ),
+        Value::Object { class, properties } => {
+            path.push("properties".into());
+            let properties = properties
+                .iter()
+                .map(|(key, value)| {
+                    path.push(key.clone());
+                    let value = restore_value(value, images, blobs, path);
+                    path.pop();
+                    (key.clone(), value)
+                })
+                .collect();
+            path.pop();
+            Value::Object {
+                class: class.clone(),
+                properties,
+            }
+        }
+        _ => v.clone(),
+    }
 }
 fn replace(v: &Value, images: &Images, path: &mut Vec<String>, restore: bool) -> Value {
     let joined = path.join(".");
@@ -231,4 +337,38 @@ pub fn temp_cache_dir(base: &Path) -> Result<PathBuf> {
     let p = base.join(format!("wonderdraft_rust_{}_{}", std::process::id(), stamp));
     fs::create_dir_all(&p).at(&p)?;
     Ok(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_payloads_survive_editable_tree_round_trip() {
+        let original = Value::Object {
+            class: "Resource".into(),
+            properties: vec![(
+                "blob".into(),
+                Value::PoolByteArray(ByteSource::File {
+                    path: PathBuf::from("/tmp/example.bin"),
+                    offset: 12,
+                    len: 500,
+                }),
+            )],
+        };
+        let prepared = prepare(&original);
+        assert_eq!(prepared.binary_blobs.len(), 1);
+        assert!(matches!(
+            &prepared.editable,
+            Value::Object { properties, .. }
+                if matches!(&properties[0].1, Value::PoolByteArrayRef { len: 500, .. })
+        ));
+        let restored =
+            restore_external(&prepared.editable, &prepared.images, &prepared.binary_blobs);
+        assert!(matches!(
+            restored,
+            Value::Object { properties, .. }
+                if matches!(&properties[0].1, Value::PoolByteArray(ByteSource::File { len: 500, .. }))
+        ));
+    }
 }

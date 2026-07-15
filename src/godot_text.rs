@@ -289,6 +289,54 @@ fn constructor(name: &str, args: Vec<Value>, pos: usize) -> Result<Value> {
                 .map(|v| number(v).map(|n| n as u8))
                 .collect::<Result<_>>()?,
         )),
+        "PoolByteArrayRef" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(Error::format(format!(
+                    "PoolByteArrayRef requires a path and optional length at character {pos}"
+                )));
+            }
+            let Value::String(path) = &args[0] else {
+                return Err(Error::format(format!(
+                    "PoolByteArrayRef requires a path string at character {pos}"
+                )));
+            };
+            let len = args.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+            if !len.is_finite() || len < 0.0 {
+                return Err(Error::format(
+                    "PoolByteArrayRef length must be non-negative",
+                ));
+            }
+            Value::PoolByteArrayRef {
+                path: path.clone(),
+                len: len as u64,
+            }
+        }
+        "Object" => {
+            if args.len() != 2 {
+                return Err(Error::format(format!(
+                    "Object requires a class name and property dictionary at character {pos}"
+                )));
+            }
+            let Value::String(class) = &args[0] else {
+                return Err(Error::format("Object class name must be a string"));
+            };
+            let Value::Dictionary(properties) = &args[1] else {
+                return Err(Error::format("Object properties must be a Dictionary"));
+            };
+            let properties = properties
+                .iter()
+                .map(|(key, value)| {
+                    let key = key
+                        .as_str()
+                        .ok_or_else(|| Error::format("Object property names must be strings"))?;
+                    Ok((key.to_owned(), value.clone()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Value::Object {
+                class: class.clone(),
+                properties,
+            }
+        }
         "PoolIntArray" => Value::PoolIntArray(
             args.iter()
                 .map(|v| number(v).map(|n| n as i32))
@@ -439,6 +487,13 @@ fn write_text(v: &Value, out: &mut String) {
             }
             out.push_str(" )");
         }
+        Value::PoolByteArrayRef { path, len } => {
+            out.push_str("PoolByteArrayRef( ");
+            out.push_str(&serde_json::to_string(path).unwrap());
+            out.push_str(", ");
+            out.push_str(&len.to_string());
+            out.push_str(" )");
+        }
         Value::PoolIntArray(a) => pool_fmt(out, "PoolIntArray", a.iter().map(ToString::to_string)),
         Value::PoolRealArray(a) => pool_fmt(
             out,
@@ -456,22 +511,19 @@ fn write_text(v: &Value, out: &mut String) {
             values.iter().flatten().map(|n| fmt_num(*n as f64, false)),
         ),
         Value::Object { class, properties } => {
-            let d = Value::Dictionary(vec![
-                (
-                    Value::String("__class__".into()),
-                    Value::String(class.clone()),
+            out.push_str("Object( ");
+            out.push_str(&serde_json::to_string(class).unwrap());
+            out.push_str(", ");
+            write_text(
+                &Value::Dictionary(
+                    properties
+                        .iter()
+                        .map(|(k, v)| (Value::String(k.clone()), v.clone()))
+                        .collect(),
                 ),
-                (
-                    Value::String("properties".into()),
-                    Value::Dictionary(
-                        properties
-                            .iter()
-                            .map(|(k, v)| (Value::String(k.clone()), v.clone()))
-                            .collect(),
-                    ),
-                ),
-            ]);
-            write_text(&d, out);
+                out,
+            );
+            out.push_str(" )");
         }
         Value::NodePath {
             names,
@@ -514,5 +566,26 @@ mod tests {
         let s = "{\n\"x\": Vector2( 1, 2 ),\n\"a\": [ true, null, 4.5 ]\n}";
         let v = parse(s).unwrap();
         assert!(matches!(parse(&format(&v)).unwrap(), Value::Dictionary(_)));
+    }
+
+    #[test]
+    fn preserves_objects_and_external_byte_placeholders() {
+        let value = Value::Object {
+            class: "Resource".into(),
+            properties: vec![(
+                "payload".into(),
+                Value::PoolByteArrayRef {
+                    path: "resource.payload".into(),
+                    len: 9_000_000,
+                },
+            )],
+        };
+        let parsed = parse(&format(&value)).unwrap();
+        assert!(matches!(
+            parsed,
+            Value::Object { class, properties }
+                if class == "Resource"
+                    && matches!(&properties[0].1, Value::PoolByteArrayRef { len: 9_000_000, .. })
+        ));
     }
 }

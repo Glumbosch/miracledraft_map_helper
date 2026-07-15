@@ -345,6 +345,11 @@ pub fn encoded_size(v: &Value) -> Result<u64> {
         }
         Value::ObjectId(_) => 12,
         Value::PoolByteArray(b) => 8 + b.len() + (4 - b.len() % 4) % 4,
+        Value::PoolByteArrayRef { path, .. } => {
+            return Err(Error::format(format!(
+                "cannot encode unresolved PoolByteArrayRef {path:?}"
+            )));
+        }
         Value::PoolIntArray(a) => 8 + 4 * a.len() as u64,
         Value::PoolRealArray(a) => 8 + 4 * a.len() as u64,
         Value::PoolStringArray(a) => 8 + a.iter().map(|s| raw_string_size(s)).sum::<u64>(),
@@ -468,6 +473,11 @@ pub fn write_value(w: &mut impl Write, v: &Value) -> Result<()> {
             let p = (4 - b.len() % 4) % 4;
             w.write_all(&[0; 3][..p as usize])
                 .map_err(|e| Error::format(e.to_string()))?
+        }
+        Value::PoolByteArrayRef { path, .. } => {
+            return Err(Error::format(format!(
+                "cannot encode unresolved PoolByteArrayRef {path:?}"
+            )));
         }
         Value::PoolIntArray(a) => {
             header(w, "PoolIntArray", 0)?;

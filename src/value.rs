@@ -90,6 +90,12 @@ pub enum Value {
     Rid,
     ObjectId(i64),
     PoolByteArray(ByteSource),
+    /// Editable placeholder for a disk-backed PoolByteArray held separately.
+    /// This value must be restored before binary encoding.
+    PoolByteArrayRef {
+        path: String,
+        len: u64,
+    },
     PoolIntArray(Vec<i32>),
     PoolRealArray(Vec<f32>),
     PoolStringArray(Vec<String>),
