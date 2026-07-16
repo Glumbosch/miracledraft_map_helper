@@ -1,4 +1,4 @@
-# Wonderdraft Map Editor — Rust
+# Wonderdraft Map Editor 
 
 The main installation, setup, workflow, and troubleshooting guide is now
 [`README.md`](README.md). This document records additional implementation notes

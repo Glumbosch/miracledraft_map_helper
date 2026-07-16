@@ -1,15 +1,6 @@
 # Contributing
 
-Thanks for helping improve Wonderdraft Map Editor.
-
-## Before opening an issue
-
-- Search existing issues first.
-- Reproduce the problem with the latest release when possible.
-- Remove private paths and proprietary map or asset data from logs and samples.
-- Never upload Wonderdraft's application files, extracted resources, or paid
-  asset packs. Create the smallest synthetic map or fixture that demonstrates
-  the problem.
+Thanks for wanting to help with this project. I don't inted to maintain this project. As this is a small one time use tool for me.
 
 ## Development setup
 
@@ -39,5 +30,6 @@ cargo clippy --locked --all-targets -- -D warnings
 Do not commit generated settings, extracted `wonderdraft_files`, maps, cache
 data, or build output. New behavior should include tests where practical.
 
-By contributing, you agree that your contribution is licensed under the MIT
-License used by this repository.
+By contributing, you agree to dedicate any copyright and related rights you
+hold in the contribution to the public domain under the repository's
+[Unlicense](LICENSE), to the fullest extent permitted by law.
