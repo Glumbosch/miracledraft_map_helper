@@ -3,6 +3,9 @@
 The SVG workflow is designed for editing Wonderdraft roads, paths, symbols,
 labels, and territories in applications such as Inkscape.
 
+For the exact group and attribute rules used by the importer, see
+[Editing SVG for Import](Editing-SVG-for-Import).
+
 ## Workflow
 
 1. Open a `.wonderdraft_map` and keep an untouched backup.

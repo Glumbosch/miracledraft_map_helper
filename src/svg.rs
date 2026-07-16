@@ -814,11 +814,92 @@ fn attr<'a>(e: &'a El, name: &str) -> Option<&'a str> {
         .find_map(|(k, v)| (k == name || k.ends_with(&format!(":{name}"))).then_some(v.as_str()))
 }
 fn presentation<'a>(e: &'a El, name: &str) -> Option<&'a str> {
-    attr(e, name).or_else(|| {
-        attr(e, "style")?.split(';').find_map(|declaration| {
-            let (property, value) = declaration.split_once(':')?;
-            (property.trim() == name).then_some(value.trim())
+    attr(e, "style")
+        .and_then(|style| {
+            style.split(';').find_map(|declaration| {
+                let (property, value) = declaration.split_once(':')?;
+                (property.trim() == name).then_some(value.trim())
+            })
         })
+        .or_else(|| attr(e, name))
+}
+
+fn svg_color(value: &str) -> Option<[f32; 4]> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if value.eq_ignore_ascii_case("transparent") {
+        return Some([0.0, 0.0, 0.0, 0.0]);
+    }
+    let hex = value.strip_prefix('#')?;
+    let digit = |index: usize| u8::from_str_radix(&hex[index..index + 1], 16).ok();
+    let pair = |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok();
+    let (red, green, blue, alpha) = match hex.len() {
+        3 => (digit(0)? * 17, digit(1)? * 17, digit(2)? * 17, 255),
+        4 => (
+            digit(0)? * 17,
+            digit(1)? * 17,
+            digit(2)? * 17,
+            digit(3)? * 17,
+        ),
+        6 => (pair(0)?, pair(2)?, pair(4)?, 255),
+        8 => (pair(0)?, pair(2)?, pair(4)?, pair(6)?),
+        _ => return None,
+    };
+    Some([
+        red as f32 / 255.0,
+        green as f32 / 255.0,
+        blue as f32 / 255.0,
+        alpha as f32 / 255.0,
+    ])
+}
+
+fn presentation_opacity(element: &El, name: &str) -> f32 {
+    presentation(element, name)
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0)
+}
+
+fn presentation_color(element: &El, name: &str, opacity_name: &str) -> Option<[f32; 4]> {
+    let mut color = svg_color(presentation(element, name)?)?;
+    color[3] *=
+        presentation_opacity(element, opacity_name) * presentation_opacity(element, "opacity");
+    Some(color)
+}
+
+fn set_record_color(record: &mut Value, color: [f32; 4]) {
+    record.set(
+        "color",
+        Value::Vector {
+            kind: "Color".into(),
+            values: color.to_vec(),
+        },
+    );
+}
+
+fn transformed_stroke_width(element: &El, default: f64) -> f64 {
+    let width = f(element, "stroke-width", default);
+    let (scale_x, scale_y, _, _) = matrix_scale_rotation(element.matrix);
+    width * (scale_x * scale_y).sqrt()
+}
+
+fn territory_width_from_stroke(element: &El, record: &Value) -> Option<f64> {
+    let stroke = presentation(element, "stroke")?;
+    if stroke.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let old_width = n(record.get("width"), 1.0);
+    let visible_width = transformed_stroke_width(element, old_width);
+    let style = attr(element, "style")
+        .filter(|style| style.starts_with("res://"))
+        .or_else(|| record.get("style").and_then(Value::as_str))
+        .unwrap_or("");
+    Some(if style.ends_with("border_dark_dot") {
+        visible_width / 0.42
+    } else {
+        visible_width
     })
 }
 fn f(e: &El, name: &str, d: f64) -> f64 {
@@ -1275,6 +1356,16 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                 let position = vec2(r.get("position"), (0., 0.));
                 let points = transformed_points(&e, position);
                 replace_record_points(&mut r, points);
+                if let Some(color) = presentation_color(&e, "stroke", "stroke-opacity") {
+                    set_record_color(&mut r, color);
+                }
+                if presentation(&e, "stroke-width").is_some() {
+                    let old_width = n(r.get("width"), 1.0);
+                    r.set(
+                        "width",
+                        Value::Real(transformed_stroke_width(&e, old_width)),
+                    );
+                }
                 paths.push(r);
                 summary.paths += 1
             }
@@ -1286,6 +1377,17 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                 let position = vec2(record.get("position"), (0.0, 0.0));
                 let points = transformed_points(&e, position);
                 replace_record_points(&mut record, points);
+                if let Some(mut color) = svg_color(presentation(&e, "fill").unwrap_or("none")) {
+                    let fill_opacity = presentation_opacity(&e, "fill-opacity")
+                        * presentation_opacity(&e, "opacity")
+                        * color[3];
+                    color[3] = 1.0;
+                    set_record_color(&mut record, color);
+                    record.set("opacity", Value::Real(fill_opacity as f64));
+                }
+                if let Some(width) = territory_width_from_stroke(&e, &record) {
+                    record.set("width", Value::Real(width));
+                }
                 territories.push(record);
                 summary.territories += 1;
             }
@@ -1667,6 +1769,143 @@ mod tests {
                 .and_then(Value::as_str)
                 .unwrap()
                 .contains("Vector2( 20, 30 )")
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn imports_css_path_color_width_and_territory_fill_width() {
+        let base = std::env::temp_dir().join(format!(
+            "wonderdraft-svg-presentation-import-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let path_record = dict(vec![
+            (
+                "color",
+                Value::Vector {
+                    kind: "Color".into(),
+                    values: vec![0.1, 0.2, 0.3, 1.0],
+                },
+            ),
+            (
+                "points",
+                Value::String("[ Vector2( 10, 20 ), Vector2( 50, 60 ) ]".into()),
+            ),
+            (
+                "position",
+                Value::Vector {
+                    kind: "Vector2".into(),
+                    values: vec![0.0, 0.0],
+                },
+            ),
+            (
+                "style",
+                Value::String("res://textures/paths/path_dash".into()),
+            ),
+            ("width", Value::Real(7.0)),
+        ]);
+        let territory_record = dict(vec![
+            (
+                "color",
+                Value::Vector {
+                    kind: "Color".into(),
+                    values: vec![0.0, 0.34, 0.7, 1.0],
+                },
+            ),
+            ("opacity", Value::Real(0.25)),
+            (
+                "points",
+                Value::String(
+                    "[ Vector2( 100, 100 ), Vector2( 200, 100 ), Vector2( 150, 200 ) ]".into(),
+                ),
+            ),
+            (
+                "position",
+                Value::Vector {
+                    kind: "Vector2".into(),
+                    values: vec![0.0, 0.0],
+                },
+            ),
+            (
+                "style",
+                Value::String("res://textures/borders/border_dash".into()),
+            ),
+            ("width", Value::Real(10.0)),
+        ]);
+        let root = dict(vec![
+            ("map_width", Value::Int(512)),
+            ("map_height", Value::Int(512)),
+            ("paths", Value::Array(vec![path_record])),
+            (
+                "territories",
+                dict(vec![("territories", Value::Array(vec![territory_record]))]),
+            ),
+        ]);
+        let destination = base.join("edited.svg");
+        let resolver = Resolver::new(&Settings::default());
+        export(
+            &root,
+            &Vec::new(),
+            &destination,
+            &resolver,
+            ExportOptions {
+                background: false,
+                paths: true,
+                symbols: false,
+                labels: false,
+                territories: true,
+                embed_background: false,
+                embed_symbols: false,
+            },
+        )
+        .unwrap();
+        let xml = fs::read_to_string(&destination)
+            .unwrap()
+            .replacen(
+                "id=\"wonderdraft-path-0\"",
+                "id=\"wonderdraft-path-0\" style=\"stroke:#ff0000;stroke-width:18\"",
+                1,
+            )
+            .replacen(
+                "id=\"wonderdraft-territory-0\"",
+                "id=\"wonderdraft-territory-0\" style=\"fill:#ffff00;stroke-width:14\"",
+                1,
+            );
+        fs::write(&destination, xml).unwrap();
+
+        let mut imported = root.clone();
+        let summary = import(&mut imported, &destination, &resolver).unwrap();
+        assert_eq!(summary.paths, 1);
+        assert_eq!(summary.territories, 1);
+        let imported_path = &imported.get("paths").and_then(Value::as_array).unwrap()[0];
+        assert_eq!(
+            imported_path.get("width").and_then(Value::as_f64),
+            Some(18.0)
+        );
+        let Some(Value::Vector { kind, values }) = imported_path.get("color") else {
+            panic!("imported path has no color");
+        };
+        assert_eq!(kind, "Color");
+        assert_eq!(values, &[1.0, 0.0, 0.0, 1.0]);
+        let imported_territory = &imported
+            .get("territories")
+            .and_then(|value| value.get("territories"))
+            .and_then(Value::as_array)
+            .unwrap()[0];
+        assert_eq!(
+            imported_territory.get("width").and_then(Value::as_f64),
+            Some(14.0)
+        );
+        let Some(Value::Vector { kind, values }) = imported_territory.get("color") else {
+            panic!("imported territory has no color");
+        };
+        assert_eq!(kind, "Color");
+        assert_eq!(values, &[1.0, 1.0, 0.0, 1.0]);
+        assert_eq!(
+            imported_territory.get("opacity").and_then(Value::as_f64),
+            Some(0.25)
         );
         let _ = fs::remove_dir_all(base);
     }

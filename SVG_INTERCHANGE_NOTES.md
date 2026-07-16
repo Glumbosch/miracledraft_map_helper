@@ -48,7 +48,16 @@ Roads and territories export as SVG `<path>` elements with `wd:kind="path"` or
 `wd:kind="territory"`. The original record remains in `wd:record`, while path
 endpoint edits are converted back to the record's original string, array, or
 pool-vector representation during import. The importer also continues to
-accept older `points` attributes.
+accept older `points` attributes. Group IDs are organizational only: the
+importer scans the full document for `wd:kind`, applies ancestor transforms,
+and does not require an element to remain in its exported group. Presentation
+styles must be placed on the tagged element rather than only on an ancestor.
+
+For roads, imported `stroke`, `stroke-opacity`, and `stroke-width` update the
+record's color and width. For territories, imported `fill`, `fill-opacity`, and
+`stroke-width` update color, opacity, and border width. CSS declarations in the
+element's `style` attribute take precedence over same-named presentation
+attributes, matching Inkscape's output.
 
 The territory color is used for the fill and ordinary border. Fill opacity
 comes from the record's `opacity`; borders are drawn at full opacity.

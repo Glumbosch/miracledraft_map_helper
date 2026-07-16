@@ -4,6 +4,7 @@
 - [Getting Started](Getting-Started)
 - [Functions and Keyboard Shortcuts](Functions-and-Keyboard-Shortcuts)
 - [SVG Round Trip](SVG-Round-Trip)
+- [Editing SVG for Import](Editing-SVG-for-Import)
 - [Settings and Troubleshooting](Settings-and-Troubleshooting)
 
 ---
