@@ -77,7 +77,7 @@ jobs:
           mkdir -p "dist/$package"
           install -m 755 target/release/wonderdraft-editor "dist/$package/wonderdraft-editor"
           install -m 755 install-linux-launcher.sh "dist/$package/install-linux-launcher.sh"
-          install -m 644 README.md LICENSE wonderdraft_font_names.txt wonderdraft-map-extractor.desktop wonderdraft_map_extractor.png wonderdraft_map_extractor.svg "dist/$package/"
+          install -m 644 README.md LICENSE AI_DISCLOSURE.md wonderdraft_font_names.txt wonderdraft-map-extractor.desktop wonderdraft_map_extractor.png wonderdraft_map_extractor.svg "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
       - name: Package Windows archive
@@ -88,7 +88,7 @@ jobs:
           $package = "wonderdraft-editor-$version-windows-x86_64"
           New-Item -ItemType Directory -Force "dist/$package" | Out-Null
           Copy-Item target/release/wonderdraft-editor.exe "dist/$package/"
-          Copy-Item README.md, LICENSE, wonderdraft_font_names.txt "dist/$package/"
+          Copy-Item README.md, LICENSE, AI_DISCLOSURE.md, wonderdraft_font_names.txt "dist/$package/"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
 
       - name: Package macOS archive
@@ -99,7 +99,7 @@ jobs:
           package="wonderdraft-editor-${version}-macos-aarch64"
           mkdir -p "dist/$package"
           install -m 755 target/release/wonderdraft-editor "dist/$package/wonderdraft-editor"
-          install -m 644 README.md LICENSE wonderdraft_font_names.txt "dist/$package/"
+          install -m 644 README.md LICENSE AI_DISCLOSURE.md wonderdraft_font_names.txt "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
       - name: Upload release archive
