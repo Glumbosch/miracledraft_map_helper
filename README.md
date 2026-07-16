@@ -99,10 +99,16 @@ directory. Wonderdraft image resources are given a `.png` extension, and
 
 - Open a map with **Open map**, **Open recent**, or drag and drop.
 - Validate or edit the complete Godot text representation.
+- Press **Ctrl+F** to find text, or use the right-panel section dropdown to jump
+  to symbols, roads/paths, labels, territories, or theme data.
+- Export the currently displayed Godot text to a `.txt` file with **Export map
+  data…**.
+- Remove stale symbols whose complete scaled, offset, rotated, mirrored, and
+  outlined bounds are outside the map with **Remove off-canvas symbols**.
 - Save a compressed or literal-only map and optionally verify it by decoding it
   again.
 - Export or replace embedded `ground`, `mask`, and `water_tint` images.
-- Export the background, roads/paths, symbols, and labels to SVG.
+- Export the background, roads/paths, symbols, labels, and territories to SVG.
 - Import edited SVG elements into the open map, then save the result as a new
   `.wonderdraft_map` file.
 
@@ -136,10 +142,19 @@ symbol with `mirror: true` is flipped vertically before rotation. Records with
 a positive `outline_width` and valid `outline_color` receive a reusable SVG
 outline filter.
 
+Territories retain their encoded records and editable point lists. Territory
+fill uses the record's `opacity`, while ordinary and dashed outlines use the
+territory color at full opacity. `border_gradient` uses a solid border at twice
+the configured width with a 10-pixel Gaussian blur. `border_dash` uses a dashed
+outline, and `border_dark_dot` uses a black dotted outline.
+
 ## Settings and generated data
 
 `wonderdraft_gui.config` stores the Wonderdraft, asset, cache, and completed
-setup settings as JSON. The editor first uses a config file in the working
+setup settings as JSON. It also stores the last four maps opened by this editor.
+**Open recent** refreshes Wonderdraft's `config.ini` whenever the menu opens and
+deduplicates its entries against the editor's own recent list. The editor first
+uses a config file in the working
 directory when one exists; otherwise it uses a file beside the executable.
 
 Map payloads are unpacked into the configured cache while a map is open. The

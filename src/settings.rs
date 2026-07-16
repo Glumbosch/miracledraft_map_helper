@@ -21,6 +21,8 @@ pub struct Settings {
     pub clear_cache_on_exit: bool,
     #[serde(default)]
     pub setup_completed: bool,
+    #[serde(default)]
+    pub recent_maps: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -33,6 +35,7 @@ impl Default for Settings {
             auto_locate_custom_assets: true,
             clear_cache_on_exit: true,
             setup_completed: false,
+            recent_maps: Vec::new(),
         }
     }
 }
@@ -122,6 +125,31 @@ pub fn custom_assets_folder(folder: &Path, config: &WonderdraftConfig) -> PathBu
     } else {
         root.join("assets")
     }
+}
+
+pub fn remember_recent_map(settings: &mut Settings, path: &Path) {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    settings
+        .recent_maps
+        .retain(|recent| recent.canonicalize().unwrap_or_else(|_| recent.to_owned()) != path);
+    settings.recent_maps.insert(0, path);
+    settings.recent_maps.truncate(4);
+}
+
+pub fn merged_recent_maps(editor: &[PathBuf], wonderdraft: &[PathBuf]) -> Vec<PathBuf> {
+    let mut merged = Vec::new();
+    for path in editor.iter().take(4).chain(wonderdraft) {
+        let normalized = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        if !merged.iter().any(|existing: &PathBuf| {
+            existing
+                .canonicalize()
+                .unwrap_or_else(|_| existing.to_owned())
+                == normalized
+        }) {
+            merged.push(path.to_owned());
+        }
+    }
+    merged
 }
 
 fn parse_wonderdraft_config(text: &str) -> WonderdraftConfig {
@@ -261,6 +289,7 @@ mod tests {
         assert!(settings.auto_locate_custom_assets);
         assert!(settings.clear_cache_on_exit);
         assert!(!settings.setup_completed);
+        assert!(settings.recent_maps.is_empty());
     }
 
     #[test]
@@ -316,5 +345,30 @@ last_directory="/maps"
         assert!(unrelated.is_dir());
         assert_eq!(directory_size(&base).unwrap(), 20);
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn editor_recents_keep_four_and_merge_without_duplicates() {
+        let mut settings = Settings::default();
+        for name in ["one", "two", "three", "four", "five"] {
+            remember_recent_map(&mut settings, Path::new(name));
+        }
+        assert_eq!(
+            settings.recent_maps,
+            ["five", "four", "three", "two"].map(PathBuf::from)
+        );
+        remember_recent_map(&mut settings, Path::new("three"));
+        assert_eq!(
+            settings.recent_maps,
+            ["three", "five", "four", "two"].map(PathBuf::from)
+        );
+        let merged = merged_recent_maps(
+            &settings.recent_maps,
+            &[PathBuf::from("five"), PathBuf::from("wonderdraft-only")],
+        );
+        assert_eq!(
+            merged,
+            ["three", "five", "four", "two", "wonderdraft-only"].map(PathBuf::from)
+        );
     }
 }

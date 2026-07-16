@@ -11,8 +11,9 @@ focuses on the detailed map and SVG workflows.
 - Opens and decodes `.wonderdraft_map` files directly.
 - Edits the complete Godot Variant text representation.
 - Exports and replaces the three embedded map images as PNG.
-- Exports labels, symbols, and paths to an editable SVG.
-- Imports edited SVG text, symbol images/circles, and paths back into the map.
+- Exports labels, symbols, paths, and territories to an editable SVG.
+- Imports edited SVG text, symbol images/circles, paths, and territory points
+  back into the map.
 - Resolves `user://assets/...` custom textures and `res://sprites/...` default textures.
 - Saves a new FastLZ-compressed `.wonderdraft_map` and verifies it by decoding it again.
 
@@ -61,6 +62,8 @@ The SVG contains:
 - Symbols as SVG images pointing to their source sprite files, or as embedded
   base64 PNG definitions with lightweight `<use>` clones.
 - Existing paths as editable SVG polylines when their point array can be identified.
+- Territories as editable SVG polygons with solid, gradient-blurred, dashed, or
+  dark-dotted borders matching their Wonderdraft style.
 - `wd:*` metadata attributes containing the original Wonderdraft records for reliable round trips.
 
 When a custom or default sprite cannot be found, the exporter places a magenta-outlined SVG circle at the symbol position. The original symbol record remains attached to that circle.
@@ -78,6 +81,7 @@ For SVG files exported by this program, the importer preserves the original Wond
 - Label text, position, font, size, alignment, rotation, fill, and outline.
 - Symbol position, displayed size, rotation, mirroring, sample color, and texture.
 - Path points and basic stroke color/width.
+- Territory points while preserving the original territory record and style.
 
 For arbitrary SVG files, the importer makes a best-effort conversion:
 

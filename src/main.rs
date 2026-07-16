@@ -32,6 +32,7 @@ struct App {
     verify: bool,
     embed_bg: bool,
     embed_symbols: bool,
+    export_territories: bool,
     export_background: bool,
     export_paths: bool,
     export_symbols: bool,
@@ -46,6 +47,12 @@ struct App {
     pending_dialog: Option<Receiver<DialogSelection>>,
     map_load: Option<Receiver<Result<LoadedMap>>>,
     pck_extraction: Option<Receiver<Result<pck::Extraction>>>,
+    search_open: bool,
+    search_query: String,
+    search_from: usize,
+    focus_search: bool,
+    pending_text_selection: Option<(usize, usize)>,
+    section_choice: usize,
 }
 
 struct LoadedMap {
@@ -62,6 +69,7 @@ enum DialogAction {
     SaveMap { file_name: String },
     ExportSvg { file_name: String },
     ImportSvg,
+    ExportMapData { file_name: String },
     ExportImage { index: usize, file_name: String },
     ExportAllImages,
     ReplaceImage { index: usize },
@@ -112,6 +120,7 @@ impl Default for App {
             verify: true,
             embed_bg: false,
             embed_symbols: false,
+            export_territories: true,
             export_background: true,
             export_paths: true,
             export_symbols: true,
@@ -126,6 +135,12 @@ impl Default for App {
             pending_dialog: None,
             map_load: None,
             pck_extraction: None,
+            search_open: false,
+            search_query: String::new(),
+            search_from: 0,
+            focus_search: false,
+            pending_text_selection: None,
+            section_choice: 0,
         }
     }
 }
@@ -214,6 +229,10 @@ impl App {
                 DialogAction::ImportSvg => rfd::FileDialog::new()
                     .add_filter("SVG", &["svg"])
                     .pick_file(),
+                DialogAction::ExportMapData { file_name } => rfd::FileDialog::new()
+                    .set_file_name(file_name)
+                    .add_filter("Text", &["txt"])
+                    .save_file(),
                 DialogAction::ExportImage { file_name, .. } => rfd::FileDialog::new()
                     .set_file_name(file_name)
                     .add_filter("PNG", &["png"])
@@ -283,6 +302,8 @@ impl App {
         self.binary_blobs = loaded.binary_blobs;
         self.text = loaded.text;
         self.root_path = Some(loaded.path.clone());
+        settings::remember_recent_map(&mut self.settings, &loaded.path);
+        let _ = settings::save(&self.settings);
         self.selected = 0;
         self.preview = None;
         self.status = format!(
@@ -379,6 +400,7 @@ impl App {
             DialogAction::SaveMap { .. } => self.save_to(&path),
             DialogAction::ExportSvg { .. } => self.export_svg_to(&path),
             DialogAction::ImportSvg => self.import_svg_from(&path),
+            DialogAction::ExportMapData { .. } => self.export_map_data_to(&path),
             DialogAction::ExportImage { index, .. } => self.export_image_to(index, &path),
             DialogAction::ExportAllImages => self.export_all_to(&path),
             DialogAction::ReplaceImage { index } => self.replace_image_from(index, &path, ctx),
@@ -721,6 +743,60 @@ impl App {
             Err(e) => self.fail("Invalid map text", e),
         }
     }
+    fn export_map_data_to(&mut self, path: &Path) -> Result<()> {
+        fs::write(path, &self.text).map_err(|error| Error::format(error.to_string()))?;
+        self.status = format!("Exported map data text to {}", path.display());
+        Ok(())
+    }
+    fn queue_text_selection(&mut self, byte_start: usize, byte_len: usize) {
+        self.pending_text_selection = Some((byte_start, byte_start.saturating_add(byte_len)));
+    }
+    fn jump_to_section(&mut self, marker: &str, label: &str) {
+        if let Some(byte_start) = self.text.find(marker) {
+            self.queue_text_selection(byte_start, marker.len());
+            self.status = format!("Jumped to {label}");
+        } else {
+            self.status = format!("The loaded map has no {label} section");
+        }
+    }
+    fn find_next(&mut self) {
+        if self.search_query.is_empty() {
+            self.status = "Enter text to find".into();
+            return;
+        }
+        let mut start = self.search_from.min(self.text.len());
+        while !self.text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let found = self.text[start..]
+            .find(&self.search_query)
+            .map(|offset| start + offset)
+            .or_else(|| self.text[..start].find(&self.search_query));
+        if let Some(byte_start) = found {
+            let query_len = self.search_query.len();
+            self.queue_text_selection(byte_start, query_len);
+            self.search_from = byte_start.saturating_add(query_len);
+            self.status = format!("Found ‘{}’", self.search_query);
+        } else {
+            self.status = format!("‘{}’ was not found", self.search_query);
+        }
+    }
+    fn remove_off_canvas_symbols(&mut self) {
+        let mut root = match self.parse() {
+            Ok(root) => root,
+            Err(error) => {
+                self.fail("Could not inspect symbols", error);
+                return;
+            }
+        };
+        let removed = remove_off_canvas_symbols(&mut root, &Resolver::new(&self.settings));
+        self.text = godot_text::format(&root);
+        self.status = if removed == 1 {
+            "Removed 1 completely off-canvas symbol".into()
+        } else {
+            format!("Removed {removed} completely off-canvas symbols")
+        };
+    }
     fn save_to(&mut self, path: &Path) -> Result<()> {
         let editable = self.parse()?;
         let root = images::restore_external(&editable, &self.images, &self.binary_blobs);
@@ -751,6 +827,7 @@ impl App {
             paths: self.export_paths,
             symbols: self.export_symbols,
             labels: self.export_labels,
+            territories: self.export_territories,
             embed_background: self.embed_bg,
             embed_symbols: self.embed_symbols,
         };
@@ -762,8 +839,8 @@ impl App {
             options,
         )?;
         self.status = format!(
-            "Exported SVG: {} labels, {} symbols, {} paths",
-            s.labels, s.symbols, s.paths
+            "Exported SVG: {} labels, {} symbols, {} paths, {} territories",
+            s.labels, s.symbols, s.paths, s.territories
         );
         dialog(
             "SVG exported",
@@ -780,8 +857,8 @@ impl App {
         let s = svg::import(&mut root, path, &Resolver::new(&self.settings))?;
         self.text = godot_text::format(&root);
         self.status = format!(
-            "Imported SVG: {} labels, {} symbols, {} paths",
-            s.labels, s.symbols, s.paths
+            "Imported SVG: {} labels, {} symbols, {} paths, {} territories",
+            s.labels, s.symbols, s.paths, s.territories
         );
         dialog("SVG imported", &self.status, false);
         Ok(())
@@ -846,6 +923,15 @@ impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         self.poll_background_work(&ctx);
+        if ctx.input_mut(|input| {
+            input.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::CTRL,
+                egui::Key::F,
+            ))
+        }) {
+            self.search_open = true;
+            self.focus_search = true;
+        }
 
         let dropped_paths = ctx.input(|input| {
             input
@@ -875,7 +961,6 @@ impl eframe::App for App {
         let busy = self.pending_dialog.is_some()
             || self.map_load.is_some()
             || self.pck_extraction.is_some();
-        let recent_paths = self.wonderdraft_config.recently_opened.clone();
         let mut recent_selection = None;
         egui::Panel::top("toolbar").show(root_ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -887,11 +972,16 @@ impl eframe::App for App {
                 }
                 ui.add_enabled_ui(!busy, |ui| {
                     ui.menu_button("Open recent", |ui| {
+                        let _ = self.reload_wonderdraft_config();
+                        let recent_paths = settings::merged_recent_maps(
+                            &self.settings.recent_maps,
+                            &self.wonderdraft_config.recently_opened,
+                        );
                         if recent_paths.is_empty() {
-                            ui.label("No recent maps in Wonderdraft's config.ini");
+                            ui.label("No recent maps");
                         }
-                        for path in &recent_paths {
-                            let available = is_wonderdraft_map(path);
+                        for path in recent_paths {
+                            let available = is_wonderdraft_map(&path);
                             let response = ui
                                 .add_enabled(available, egui::Button::new(path.to_string_lossy()));
                             if !available {
@@ -900,7 +990,7 @@ impl eframe::App for App {
                                     .on_disabled_hover_text("This file no longer exists");
                             }
                             if response.clicked() {
-                                recent_selection = Some(path.clone());
+                                recent_selection = Some(path);
                                 ui.close();
                             }
                         }
@@ -930,6 +1020,15 @@ impl eframe::App for App {
                 if ui.button("Import SVG…").clicked() {
                     self.begin_dialog(DialogAction::ImportSvg, &ctx);
                 }
+                if ui.button("Export map data…").clicked() {
+                    let file_name = self
+                        .root_path
+                        .as_ref()
+                        .and_then(|path| path.file_stem())
+                        .map(|stem| format!("{}_map_data.txt", stem.to_string_lossy()))
+                        .unwrap_or_else(|| "wonderdraft_map_data.txt".into());
+                    self.begin_dialog(DialogAction::ExportMapData { file_name }, &ctx);
+                }
                 if ui.button("Export all PNGs").clicked() {
                     self.begin_dialog(DialogAction::ExportAllImages, &ctx);
                 }
@@ -943,6 +1042,13 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.embed_bg, "Embed mask in SVG");
                 ui.checkbox(&mut self.embed_symbols, "Embed symbols in SVG");
             });
+            ui.label(format!(
+                "Loaded file: {}",
+                self.root_path
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "none".into())
+            ));
             if busy {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -961,6 +1067,7 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.export_paths, "Roads / paths");
                 ui.checkbox(&mut self.export_symbols, "Symbols");
                 ui.checkbox(&mut self.export_labels, "Labels");
+                ui.checkbox(&mut self.export_territories, "Territories");
             });
             ui.label(&self.status);
         });
@@ -1024,6 +1131,35 @@ impl eframe::App for App {
                     ui.add(egui::Image::new(texture).max_size(egui::vec2(300., 300.)));
                 }
                 ui.separator();
+                ui.heading("Map tools");
+                let previous_section = self.section_choice;
+                egui::ComboBox::from_label("Jump to section")
+                    .selected_text(if self.section_choice == 0 {
+                        "Select a section"
+                    } else {
+                        MAP_SECTIONS[self.section_choice - 1].0
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.section_choice, 0, "Select a section");
+                        for (index, (label, _)) in MAP_SECTIONS.iter().enumerate() {
+                            ui.selectable_value(&mut self.section_choice, index + 1, *label);
+                        }
+                    });
+                if self.section_choice != previous_section && self.section_choice > 0 {
+                    let (label, marker) = MAP_SECTIONS[self.section_choice - 1];
+                    self.jump_to_section(marker, label);
+                    self.section_choice = 0;
+                }
+                if ui
+                    .add_enabled(
+                        self.root_path.is_some(),
+                        egui::Button::new("Remove off-canvas symbols"),
+                    )
+                    .clicked()
+                {
+                    self.remove_off_canvas_symbols();
+                }
+                ui.separator();
                 ui.label(format!(
                     "Custom assets: {}\nDefault sprites: {}\nDisk cache: {}",
                     empty(&self.settings.custom_asset_folder),
@@ -1033,14 +1169,66 @@ impl eframe::App for App {
             });
         egui::CentralPanel::default().show(root_ui, |ui| {
             ui.label("Map data (Godot text syntax)");
-            egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.text)
+            if self.search_open {
+                ui.horizontal(|ui| {
+                    ui.label("Find:");
+                    let previous_query = self.search_query.clone();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .id_salt("map-data-search")
+                            .desired_width(260.0),
+                    );
+                    if self.focus_search {
+                        response.request_focus();
+                        self.focus_search = false;
+                    }
+                    if self.search_query != previous_query {
+                        self.search_from = 0;
+                    }
+                    let enter = response.has_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    if ui.button("Find next").clicked() || enter {
+                        self.find_next();
+                    }
+                    if ui.button("Close").clicked()
+                        || ui.input(|input| input.key_pressed(egui::Key::Escape))
+                    {
+                        self.search_open = false;
+                    }
+                });
+            }
+            egui::ScrollArea::both()
+                .id_salt("map-data-scroll")
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    let mut output = egui::TextEdit::multiline(&mut self.text)
+                        .id_salt("map-data-editor")
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY)
-                        .desired_rows(40),
-                );
-            });
+                        .desired_rows(40)
+                        .show(ui);
+                    if let Some((byte_start, byte_end)) = self.pending_text_selection.take() {
+                        let char_start =
+                            self.text[..byte_start.min(self.text.len())].chars().count();
+                        let char_end = self.text[..byte_end.min(self.text.len())].chars().count();
+                        let start_cursor = egui::text::CCursor::new(char_start);
+                        let end_cursor = egui::text::CCursor::new(char_end);
+                        output
+                            .state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                start_cursor,
+                                end_cursor,
+                            )));
+                        output.state.store(ui.ctx(), output.response.id);
+                        output.response.request_focus();
+                        let cursor_rect = output
+                            .galley
+                            .pos_from_cursor(start_cursor)
+                            .translate(output.galley_pos.to_vec2());
+                        ui.scroll_to_rect(cursor_rect, Some(egui::Align::TOP));
+                    }
+                });
         });
         if self.settings_open {
             let mut open = self.settings_open;
@@ -1233,6 +1421,91 @@ fn configured_directory(value: &str) -> bool {
     !value.trim().is_empty() && Path::new(value.trim()).is_dir()
 }
 
+const MAP_SECTIONS: &[(&str, &str)] = &[
+    ("Symbols", "\"symbols\": ["),
+    ("Paths / roads", "\"paths\": ["),
+    ("Labels", "\"labels\": ["),
+    ("Territories", "\"territories\": {"),
+    ("Theme", "\"theme\": {"),
+];
+
+fn map_number(value: Option<&Value>, default: f64) -> f64 {
+    value.and_then(Value::as_f64).unwrap_or(default)
+}
+
+fn map_vec2(value: Option<&Value>, default: (f64, f64)) -> (f64, f64) {
+    match value {
+        Some(Value::Vector { values, .. }) if values.len() >= 2 => {
+            (values[0] as f64, values[1] as f64)
+        }
+        _ => default,
+    }
+}
+
+fn symbol_bounds(symbol: &Value, resolver: &Resolver) -> Option<(f64, f64, f64, f64)> {
+    let (x, y) = map_vec2(symbol.get("position"), (0.0, 0.0));
+    let (scale_x, scale_y) = map_vec2(symbol.get("scale"), (1.0, 1.0));
+    let rotation = map_number(symbol.get("rotation"), 0.0);
+    if ![x, y, scale_x, scale_y, rotation]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let texture = symbol.get("texture").and_then(Value::as_str).unwrap_or("");
+    let asset = resolver.asset_info(texture);
+    let default_offset = asset
+        .as_ref()
+        .map(|asset| (asset.offset_x, asset.offset_y))
+        .unwrap_or((0.0, 0.0));
+    let (offset_x, offset_y) = map_vec2(symbol.get("offset"), default_offset);
+    let (sin, cos) = rotation.sin_cos();
+    let scaled_offset = (offset_x * scale_x, offset_y * scale_y);
+    let center = (
+        x + scaled_offset.0 * cos - scaled_offset.1 * sin,
+        y + scaled_offset.0 * sin + scaled_offset.1 * cos,
+    );
+    let (half_width, half_height) = if let Some(asset) = asset {
+        let half_width = asset.width * scale_x.abs() / 2.0;
+        let half_height = asset.height * scale_y.abs() / 2.0;
+        (
+            cos.abs() * half_width + sin.abs() * half_height,
+            sin.abs() * half_width + cos.abs() * half_height,
+        )
+    } else {
+        let radius = map_number(symbol.get("radius"), 16.0).abs();
+        let radius_x = radius * scale_x.abs();
+        let radius_y = radius * scale_y.abs();
+        (
+            ((radius_x * cos).powi(2) + (radius_y * sin).powi(2)).sqrt(),
+            ((radius_x * sin).powi(2) + (radius_y * cos).powi(2)).sqrt(),
+        )
+    };
+    let outline = map_number(symbol.get("outline_width"), 0.0).clamp(0.0, 10_000.0);
+    Some((
+        center.0 - half_width - outline,
+        center.1 - half_height - outline,
+        center.0 + half_width + outline,
+        center.1 + half_height + outline,
+    ))
+}
+
+fn remove_off_canvas_symbols(root: &mut Value, resolver: &Resolver) -> usize {
+    let width = map_number(root.get("map_width"), 512.0).max(0.0);
+    let height = map_number(root.get("map_height"), 512.0).max(0.0);
+    let Some(Value::Array(symbols)) = root.get_mut("symbols") else {
+        return 0;
+    };
+    let before = symbols.len();
+    symbols.retain(|symbol| {
+        let Some((min_x, min_y, max_x, max_y)) = symbol_bounds(symbol, resolver) else {
+            return true;
+        };
+        max_x >= 0.0 && max_y >= 0.0 && min_x <= width && min_y <= height
+    });
+    before - symbols.len()
+}
+
 fn format_byte_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -1266,6 +1539,15 @@ fn main() -> eframe::Result {
 mod tests {
     use super::*;
 
+    fn dict(entries: Vec<(&str, Value)>) -> Value {
+        Value::Dictionary(
+            entries
+                .into_iter()
+                .map(|(key, value)| (Value::String(key.into()), value))
+                .collect(),
+        )
+    }
+
     #[test]
     fn background_loader_accepts_dropped_map_paths() {
         let base = std::env::temp_dir().join(format!(
@@ -1291,6 +1573,63 @@ mod tests {
                 .unwrap()
                 .len()
         );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn off_canvas_cleanup_uses_scaled_and_rotated_symbol_bounds() {
+        let base = std::env::temp_dir().join(format!(
+            "wonderdraft-off-canvas-symbols-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        image::RgbaImage::new(100, 20)
+            .save(base.join("wide.png"))
+            .unwrap();
+        let position = |x| Value::Vector {
+            kind: "Vector2".into(),
+            values: vec![x, 50.0],
+        };
+        let unit_scale = || Value::Vector {
+            kind: "Vector2".into(),
+            values: vec![1.0, 1.0],
+        };
+        let symbol = |x, rotation| {
+            dict(vec![
+                ("position", position(x)),
+                ("rotation", Value::Real(rotation)),
+                ("scale", unit_scale()),
+                ("texture", Value::String("user://assets/wide".into())),
+            ])
+        };
+        let mut root = dict(vec![
+            ("map_width", Value::Int(100)),
+            ("map_height", Value::Int(100)),
+            (
+                "symbols",
+                Value::Array(vec![
+                    symbol(130.0, std::f64::consts::FRAC_PI_2),
+                    symbol(105.0, 0.0),
+                    dict(vec![
+                        ("position", position(200.0)),
+                        ("radius", Value::Real(20.0)),
+                    ]),
+                    dict(vec![
+                        ("position", position(125.0)),
+                        ("radius", Value::Real(20.0)),
+                        ("outline_width", Value::Real(10.0)),
+                    ]),
+                ]),
+            ),
+        ]);
+        let resolver = Resolver::new(&Settings {
+            custom_asset_folder: base.to_string_lossy().into_owned(),
+            ..Settings::default()
+        });
+
+        assert_eq!(remove_off_canvas_symbols(&mut root, &resolver), 2);
+        assert_eq!(root.get("symbols").unwrap().as_array().unwrap().len(), 2);
         let _ = fs::remove_dir_all(base);
     }
 }

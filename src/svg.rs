@@ -18,6 +18,7 @@ pub struct Summary {
     pub labels: usize,
     pub symbols: usize,
     pub paths: usize,
+    pub territories: usize,
     pub missing_symbols: usize,
     pub background: String,
     pub warnings: Vec<String>,
@@ -29,6 +30,7 @@ pub struct ExportOptions {
     pub paths: bool,
     pub symbols: bool,
     pub labels: bool,
+    pub territories: bool,
     pub embed_background: bool,
     pub embed_symbols: bool,
 }
@@ -40,6 +42,7 @@ impl Default for ExportOptions {
             paths: true,
             symbols: true,
             labels: true,
+            territories: true,
             embed_background: false,
             embed_symbols: false,
         }
@@ -427,6 +430,73 @@ pub fn export(
         }
         xml.push_str("  </g>\n");
     }
+    if options.territories {
+        let territories = root
+            .get("territories")
+            .and_then(|territories| territories.get("territories"))
+            .and_then(Value::as_array);
+        if territories.is_some_and(|territories| {
+            territories.iter().any(|territory| {
+                territory
+                    .get("style")
+                    .and_then(Value::as_str)
+                    .is_some_and(|style| style.ends_with("border_gradient"))
+            })
+        }) {
+            xml.push_str(
+                "  <defs id=\"wonderdraft-territory-filters\">\n    <filter id=\"wonderdraft-territory-gradient-blur\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\">\n      <feGaussianBlur stdDeviation=\"10\"/>\n    </filter>\n  </defs>\n",
+            );
+        }
+        xml.push_str("  <g id=\"wonderdraft-territories\">\n");
+        if let Some(territories) = territories {
+            for (index, territory) in territories.iter().enumerate() {
+                let Some(points) = points(territory) else {
+                    continue;
+                };
+                if points.len() < 2 {
+                    continue;
+                }
+                let position = vec2(territory.get("position"), (0.0, 0.0));
+                let points = points
+                    .iter()
+                    .map(|(x, y)| format!("{:.6},{:.6}", x + position.0, y + position.1))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let (territory_color, _) = color(territory.get("color"), [0.0, 0.0, 0.0, 1.0]);
+                let opacity = n(territory.get("opacity"), 1.0).clamp(0.0, 1.0);
+                let width = n(territory.get("width"), 1.0).max(0.0);
+                let style = territory.get("style").and_then(Value::as_str).unwrap_or("");
+                let metadata = format!(
+                    "id=\"wonderdraft-territory-{index}\" points=\"{points}\" fill=\"{territory_color}\" fill-opacity=\"{opacity}\" wd:kind=\"territory\" wd:style=\"{}\" wd:record=\"{}\"",
+                    esc(style),
+                    record(territory)
+                );
+                if style.ends_with("border_gradient") {
+                    xml.push_str(&format!(
+                        "    <polygon {metadata} stroke=\"none\"/>\n    <polygon points=\"{points}\" fill=\"none\" stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{}\" stroke-linejoin=\"round\" filter=\"url(#wonderdraft-territory-gradient-blur)\" wd:role=\"territory-border\"/>\n",
+                        width * 2.0
+                    ));
+                } else if style.ends_with("border_dash") {
+                    xml.push_str(&format!(
+                        "    <polygon {metadata} stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linejoin=\"round\" stroke-dasharray=\"{} {}\"/>\n",
+                        width * 2.0,
+                        width
+                    ));
+                } else if style.ends_with("border_dark_dot") {
+                    xml.push_str(&format!(
+                        "    <polygon {metadata} stroke=\"#000000\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-dasharray=\"0 {}\"/>\n",
+                        width * 2.0
+                    ));
+                } else {
+                    xml.push_str(&format!(
+                        "    <polygon {metadata} stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linejoin=\"round\"/>\n"
+                    ));
+                }
+                summary.territories += 1;
+            }
+        }
+        xml.push_str("  </g>\n");
+    }
     if options.symbols {
         let mut outline_filters = HashMap::new();
         if let Some(symbols) = root.get("symbols").and_then(Value::as_array) {
@@ -686,6 +756,57 @@ fn transformed_rect(element: &El) -> ((f64, f64), f64, f64, f64, bool) {
     let angle = normalize_angle(raw);
     (center, width, height, angle, mirrored)
 }
+
+fn transformed_points(element: &El, position: (f64, f64)) -> Vec<Vec<f32>> {
+    attr(element, "points")
+        .unwrap_or("")
+        .split_whitespace()
+        .filter_map(|point| {
+            let mut numbers = point
+                .split(',')
+                .filter_map(|value| value.parse::<f32>().ok());
+            let point = mat_apply(
+                element.matrix,
+                numbers.next()? as f64,
+                numbers.next()? as f64,
+            );
+            Some(vec![
+                (point.0 - position.0) as f32,
+                (point.1 - position.1) as f32,
+            ])
+        })
+        .collect()
+}
+
+fn replace_record_points(record: &mut Value, points: Vec<Vec<f32>>) {
+    let replacement = match record.get("points") {
+        Some(Value::String(_)) => Value::String(godot_text::format(&Value::Array(
+            points
+                .iter()
+                .map(|point| Value::Vector {
+                    kind: "Vector2".into(),
+                    values: point.clone(),
+                })
+                .collect(),
+        ))),
+        Some(Value::Array(_)) => Value::Array(
+            points
+                .iter()
+                .map(|point| Value::Vector {
+                    kind: "Vector2".into(),
+                    values: point.clone(),
+                })
+                .collect(),
+        ),
+        _ => Value::PoolVectors {
+            kind: "PoolVector2Array".into(),
+            components: 2,
+            values: points,
+        },
+    };
+    record.set("points", replacement);
+}
+
 pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Summary> {
     let raw = fs::read_to_string(source).map_err(|e| Error::format(e.to_string()))?;
     let mut reader = Reader::from_str(&raw);
@@ -731,6 +852,7 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
     let mut labels = Vec::new();
     let mut symbols = Vec::new();
     let mut paths = Vec::new();
+    let mut territories = Vec::new();
     let mut summary = Summary::default();
     for e in found {
         match attr(&e, "kind") {
@@ -880,44 +1002,21 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                     .transpose()?
                     .unwrap_or_else(Value::dict);
                 let position = vec2(r.get("position"), (0., 0.));
-                let ps = attr(&e, "points")
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .filter_map(|p| {
-                        let mut n = p.split(',').filter_map(|v| v.parse::<f32>().ok());
-                        let point = mat_apply(e.matrix, n.next()? as f64, n.next()? as f64);
-                        Some(vec![
-                            (point.0 - position.0) as f32,
-                            (point.1 - position.1) as f32,
-                        ])
-                    })
-                    .collect::<Vec<_>>();
-                let replacement = match r.get("points") {
-                    Some(Value::String(_)) => Value::String(godot_text::format(&Value::Array(
-                        ps.iter()
-                            .map(|p| Value::Vector {
-                                kind: "Vector2".into(),
-                                values: p.clone(),
-                            })
-                            .collect(),
-                    ))),
-                    Some(Value::Array(_)) => Value::Array(
-                        ps.iter()
-                            .map(|p| Value::Vector {
-                                kind: "Vector2".into(),
-                                values: p.clone(),
-                            })
-                            .collect(),
-                    ),
-                    _ => Value::PoolVectors {
-                        kind: "PoolVector2Array".into(),
-                        components: 2,
-                        values: ps,
-                    },
-                };
-                r.set("points", replacement);
+                let points = transformed_points(&e, position);
+                replace_record_points(&mut r, points);
                 paths.push(r);
                 summary.paths += 1
+            }
+            Some("territory") => {
+                let mut record = attr(&e, "record")
+                    .map(decode_record)
+                    .transpose()?
+                    .unwrap_or_else(Value::dict);
+                let position = vec2(record.get("position"), (0.0, 0.0));
+                let points = transformed_points(&e, position);
+                replace_record_points(&mut record, points);
+                territories.push(record);
+                summary.territories += 1;
             }
             _ => {}
         }
@@ -930,6 +1029,14 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
     }
     if !paths.is_empty() {
         root.set("paths", Value::Array(paths));
+    }
+    if !territories.is_empty() {
+        if root.get("territories").is_none() {
+            root.set("territories", Value::dict());
+        }
+        if let Some(territory_data) = root.get_mut("territories") {
+            territory_data.set("territories", Value::Array(territories));
+        }
     }
     Ok(summary)
 }
@@ -1006,6 +1113,7 @@ mod tests {
                 paths: false,
                 symbols: true,
                 labels: false,
+                territories: false,
                 embed_background: false,
                 embed_symbols: false,
             },
@@ -1135,6 +1243,7 @@ mod tests {
                 paths: false,
                 symbols: true,
                 labels: false,
+                territories: false,
                 embed_background: false,
                 embed_symbols: true,
             },
@@ -1185,6 +1294,106 @@ mod tests {
                 && symbol.get("custom_color_mode").and_then(Value::as_f64) == Some(1.0)
         }));
         assert_eq!(imported_summary.symbols, 2);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn territories_export_requested_borders_and_round_trip_points() {
+        let base = std::env::temp_dir().join(format!(
+            "wonderdraft-svg-territories-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let make_territory = |style: &str, opacity: f64| {
+            dict(vec![
+                (
+                    "color",
+                    Value::Vector {
+                        kind: "Color".into(),
+                        values: vec![0.25, 0.5, 0.75, 0.4],
+                    },
+                ),
+                ("opacity", Value::Real(opacity)),
+                (
+                    "points",
+                    Value::String(
+                        "[ Vector2( 10, 20 ), Vector2( 50, 20 ), Vector2( 50, 60 ) ]".into(),
+                    ),
+                ),
+                (
+                    "position",
+                    Value::Vector {
+                        kind: "Vector2".into(),
+                        values: vec![5.0, 7.0],
+                    },
+                ),
+                ("style", Value::String(style.into())),
+                ("width", Value::Real(10.0)),
+            ])
+        };
+        let root = dict(vec![
+            ("map_width", Value::Int(512)),
+            ("map_height", Value::Int(512)),
+            (
+                "territories",
+                dict(vec![(
+                    "territories",
+                    Value::Array(vec![
+                        make_territory("res://textures/borders/border_gradient", 0.05),
+                        make_territory("res://textures/borders/border_dash", 0.4),
+                        make_territory("res://textures/borders/border_dark_dot", 0.8),
+                    ]),
+                )]),
+            ),
+        ]);
+        let destination = base.join("territories.svg");
+        let resolver = Resolver::new(&Settings::default());
+
+        let summary = export(
+            &root,
+            &Vec::new(),
+            &destination,
+            &resolver,
+            ExportOptions {
+                background: false,
+                paths: false,
+                symbols: false,
+                labels: false,
+                territories: true,
+                embed_background: false,
+                embed_symbols: false,
+            },
+        )
+        .unwrap();
+        let mut xml = fs::read_to_string(&destination).unwrap();
+        assert_eq!(summary.territories, 3);
+        assert!(xml.contains("<feGaussianBlur stdDeviation=\"10\"/>"));
+        assert!(xml.contains("stroke-width=\"20\""));
+        assert!(xml.contains("stroke-dasharray=\"20 10\""));
+        assert!(xml.contains("stroke=\"#000000\""));
+        assert!(xml.contains("stroke-dasharray=\"0 20\""));
+        assert!(xml.contains("fill-opacity=\"0.05\""));
+        assert!(xml.contains("stroke-opacity=\"1\""));
+        xml = xml.replacen("15.000000,27.000000", "25.000000,37.000000", 1);
+        fs::write(&destination, xml).unwrap();
+
+        let mut imported = root.clone();
+        let imported_summary = import(&mut imported, &destination, &resolver).unwrap();
+        assert_eq!(imported_summary.territories, 3);
+        let territories = imported
+            .get("territories")
+            .and_then(|value| value.get("territories"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(territories.len(), 3);
+        assert!(
+            territories[0]
+                .get("points")
+                .and_then(Value::as_str)
+                .unwrap()
+                .contains("Vector2( 20, 30 )")
+        );
         let _ = fs::remove_dir_all(base);
     }
 }
