@@ -5,6 +5,62 @@ their element type inside a recognized Wonderdraft Inkscape layer. Tagged
 elements can remain anywhere in the document; layer recognition is primarily
 useful for newly created elements that do not have Wonderdraft metadata yet.
 
+The SVG workflow is optimized for **Inkscape**. Exports use real Inkscape
+layers, Inkscape-compatible presentation attributes, and editable path,
+symbol, label, and territory elements. Other SVG editors can work, but they
+must preserve the `wd` namespace, `wd:*` attributes, layer names, and element
+transforms.
+
+## Simplest way to add another object
+
+The easiest and most reliable way to add another symbol, road/path, territory,
+or label is to **duplicate an existing exported object in Inkscape** and edit
+the duplicate:
+
+1. Select an existing object of the required type in its Wonderdraft layer.
+2. Press **Ctrl+D** or choose **Edit → Duplicate**.
+3. Move, resize, rotate, recolor, or reshape the duplicate.
+4. Keep the duplicate in the same layer and do not remove its `wd:kind` or
+   `wd:record` attributes.
+
+For a symbol, duplication preserves its Wonderdraft texture, symbol type,
+offset, radius, custom-color settings, and other non-SVG fields. For a path or
+territory, it preserves the Wonderdraft line/border style, roughness, seed,
+z-index, and other record fields. The visible geometry and supported SVG
+properties are then applied to that copied record during import.
+
+Inkscape normally assigns the duplicate a new SVG `id`; the map helper does not
+use that `id` to identify the Wonderdraft object. Every supported tagged
+element becomes one imported object, including multiple elements copied from
+the same original.
+
+## Layers and what is imported
+
+| Inkscape layer | Supported object | Changes carried into the map |
+| --- | --- | --- |
+| `wonderdraft-paths` | `<path>` or `<polyline>` | Points, transforms, stroke color/opacity, and stroke width. The encoded record preserves line style, roughness, straightness, seed, and z-index. |
+| `wonderdraft-territories` | `<path>` or `<polygon>` | Points, transforms, fill color/opacity, and border width. The encoded record preserves border style and other territory fields. |
+| `wonderdraft-symbols` | `<image>`, `<use>`, or `<circle>` | Position, scale, rotation, mirroring, and a resolvable changed texture. The encoded record preserves symbol type, custom colors, z-index, and other fields. |
+| `wonderdraft-labels` | `<text>` | Position, size, rotation, text, fill color, and a mapped Wonderdraft font. The encoded record preserves outline, glow, spacing, alignment, curve, and other label fields. |
+| `wonderdraft-boxes` | Reference images only | Box geometry or image edits are not imported from SVG. |
+| `wonderdraft-mask-background` | Reference image only | Mask edits are not imported from SVG; replace the mask PNG in the map helper instead. |
+
+Decorative paths used to display outlines, patterned roads, gradients, glows,
+and similar effects carry `wd:role`. They are ignored during import and do not
+create extra map objects. Edit the associated element carrying `wd:kind`.
+
+### How imported collections are applied
+
+For each type found in the SVG, the imported elements become that type's new
+collection in the map. This means that when a paths layer contains ten tagged
+paths, those ten paths replace the map's path collection. Duplicating one adds
+one; deleting one from that exported set removes it on import.
+
+A type with no imported elements is left unchanged. For example, importing an
+SVG containing paths and symbols but no labels does not clear the map's labels.
+To avoid accidental omissions, export and keep the complete layer for every
+object type you intend to edit.
+
 ## Which group must an element be in?
 
 No particular group is required for an element that keeps `wd:kind`. The
@@ -29,6 +85,9 @@ An untagged element is imported when its type matches its recognized layer:
 - `<image>`, `<use>`, or `<circle>` in `wonderdraft-symbols`
 - `<path>` or `<polyline>` in `wonderdraft-paths`
 - `<path>` or `<polygon>` in `wonderdraft-territories`
+
+There is no untagged inference for boxes or the background mask because those
+layers are reference-only during SVG import.
 
 The layer may be identified by either `id` or `inkscape:label`, so renaming the
 other attribute does not break recognition. Moving a tagged element to another
@@ -249,6 +308,17 @@ visual resizing back into Wonderdraft scale and position. `href` or `xlink:href`
 may be used to resolve a changed texture, but `wd:texture` is the reliable
 Wonderdraft asset reference.
 
+The importer updates symbol position, scale, rotation, vertical mirroring, and
+texture when a changed linked image resolves to a known Wonderdraft asset.
+Visible SVG fill, stroke, filters, and opacity are presentation aids and do not
+replace the symbol's Wonderdraft custom-color, outline, or alpha fields; those
+remain in `wd:record`.
+
+For a new instance of the same symbol, duplicate the exported `<image>` or
+`<use>` in Inkscape and transform the duplicate. This is more reliable than
+inserting a fresh image because the copy retains the texture and source-size
+metadata needed to calculate Wonderdraft position and scale correctly.
+
 ## Labels
 
 Keep the exported `<text>` element with:
@@ -265,7 +335,9 @@ the current theme's `Town` label preset. SVG position, text, font size, and fill
 color then override the preset values. If the requested SVG font does not
 match a default or discovered custom Wonderdraft font, the Town preset's font
 is retained. The encoded record preserves other label fields for tagged
-labels.
+labels. Editing an exported SVG stroke, filter, or glow does not update the
+Wonderdraft label outline or glow; keep `wd:record` to carry those settings
+over.
 
 ## Background mask
 
@@ -277,14 +349,18 @@ for that operation.
 
 1. Export the required layers from Miracledraft Map Helper.
 2. Open the SVG in Inkscape.
-3. Select and edit the existing tagged element. Do not use **Flatten**,
-   **Unlink Clone**, or an optimizer that removes namespaced attributes.
-4. For a duplicate, duplicate the complete tagged element so its `wd:kind` and
-   `wd:record` are retained.
-5. Save as ordinary Inkscape SVG or plain SVG while preserving the `wd`
+3. Use Inkscape's **Layers and Objects** panel to work in the corresponding
+   `wonderdraft-*` layer.
+4. Select and edit the existing tagged element. For a new instance, press
+   **Ctrl+D** to duplicate the complete tagged element and then edit the copy.
+5. Do not use **Flatten**, **Unlink Clone**, or an optimizer that removes
+   namespaced attributes. For patterned paths or decorative borders, make sure
+   you edit or duplicate the element with `wd:kind`, not only the visible
+   `wd:role` decoration.
+6. Save as ordinary Inkscape SVG or plain SVG while preserving the `wd`
    namespace and attributes.
-6. Import the SVG, review the imported item counts, and use **Save map as…**.
-7. Open the new map in Wonderdraft and verify it visually.
+7. Import the SVG, review the imported item counts, and use **Save map as…**.
+8. Open the new map in Wonderdraft and verify it visually.
 
 If the import count is zero, first check that the element still has `wd:kind`,
 or that an untagged element is inside the correctly named Wonderdraft layer.
