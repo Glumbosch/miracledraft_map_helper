@@ -1,6 +1,6 @@
 [package]
 name = "wonderdraft-editor"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.87"
 description = "Native Rust editor for Wonderdraft map files with SVG interchange"
