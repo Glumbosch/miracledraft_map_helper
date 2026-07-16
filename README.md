@@ -113,6 +113,11 @@ start_wonderdraft_editor_rust.bat
 The compiled executable is `target/release/wonderdraft-editor` (or
 `wonderdraft-editor.exe` on Windows).
 
+The Settings window includes an **About** section showing the exact program
+version compiled into the running executable. The main window can be resized
+down to a narrower layout; toolbar actions and options wrap onto additional
+rows instead of forcing a wide minimum window.
+
 ### Decode `wd:record` metadata
 
 The dependency-free Python GUI `wd_record_decoder.py` decodes raw `wd:record`

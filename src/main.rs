@@ -18,6 +18,9 @@ use wonderdraft_editor::{
     variant,
 };
 
+const APP_NAME: &str = "Wonderdraft Map Editor";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 struct App {
     text: String,
     root_path: Option<PathBuf>,
@@ -1332,6 +1335,9 @@ impl eframe::App for App {
                     self.refresh_cache_size();
                     self.settings_open = true;
                 }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Options:");
                 ui.checkbox(&mut self.compressed, "Compress saved map");
                 ui.checkbox(&mut self.verify, "Verify save");
                 ui.checkbox(&mut self.embed_bg, "Embed mask in SVG");
@@ -1372,7 +1378,10 @@ impl eframe::App for App {
             self.begin_map_load(path, &ctx);
         }
         egui::Panel::right("images")
-            .default_size(300.)
+            .resizable(true)
+            .default_size(280.)
+            .min_size(210.)
+            .max_size(380.)
             .show(root_ui, |ui| {
                 ui.heading("Embedded images");
                 let mut chosen = None;
@@ -1534,6 +1543,9 @@ impl eframe::App for App {
             egui::Window::new("Settings")
                 .open(&mut open)
                 .default_width(620.0)
+                .min_width(400.0)
+                .resizable(true)
+                .vscroll(true)
                 .show(&ctx, |ui| {
                     ui.heading("Wonderdraft");
                     if ui.button("Run setup wizard…").clicked() {
@@ -1638,6 +1650,16 @@ impl eframe::App for App {
                     if self.work_dir.is_some() {
                         ui.small("The cache for the currently open map is kept until the map is replaced or the program exits.");
                     }
+
+                    ui.separator();
+                    ui.heading("About");
+                    ui.label(format!("{APP_NAME} {APP_VERSION}"));
+                    ui.label("Native Wonderdraft map and SVG interchange editor");
+                    ui.hyperlink_to(
+                        "Project website and source code",
+                        env!("CARGO_PKG_REPOSITORY"),
+                    );
+                    ui.label("License: Unlicense (public domain dedication)");
 
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -1827,14 +1849,11 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1240., 820.])
-            .with_min_inner_size([940., 620.]),
+            .with_min_inner_size([600., 480.]),
         ..Default::default()
     };
-    eframe::run_native(
-        "Wonderdraft Map Editor — Rust SVG edition",
-        options,
-        Box::new(|_| Ok(Box::new(App::default()))),
-    )
+    let title = format!("{APP_NAME} {APP_VERSION} — Rust SVG edition");
+    eframe::run_native(&title, options, Box::new(|_| Ok(Box::new(App::default()))))
 }
 
 #[cfg(test)]
