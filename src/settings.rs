@@ -19,6 +19,8 @@ pub struct Settings {
     pub auto_locate_custom_assets: bool,
     #[serde(default = "enabled")]
     pub clear_cache_on_exit: bool,
+    #[serde(default)]
+    pub setup_completed: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +32,7 @@ impl Default for Settings {
             wonderdraft_folder: String::new(),
             auto_locate_custom_assets: true,
             clear_cache_on_exit: true,
+            setup_completed: false,
         }
     }
 }
@@ -257,6 +260,7 @@ mod tests {
                 .unwrap();
         assert!(settings.auto_locate_custom_assets);
         assert!(settings.clear_cache_on_exit);
+        assert!(!settings.setup_completed);
     }
 
     #[test]

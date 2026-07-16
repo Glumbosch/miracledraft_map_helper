@@ -2,6 +2,10 @@
 
 Experimental desktop editor for Wonderdraft `.wonderdraft_map` files. 
 
+For current build instructions, the first-start setup wizard, core-pack
+discovery, and troubleshooting, see [`README.md`](README.md). This document
+focuses on the detailed map and SVG workflows.
+
 ## Main features
 
 - Opens and decodes `.wonderdraft_map` files directly.
@@ -12,17 +16,14 @@ Experimental desktop editor for Wonderdraft `.wonderdraft_map` files.
 - Resolves `user://assets/...` custom textures and `res://sprites/...` default textures.
 - Saves a new FastLZ-compressed `.wonderdraft_map` and verifies it by decoding it again.
 
-## Installtion Requirements
+## Installation requirements
 
-a copy of wonderdraft (for extracting the assets)
-
-## Build requirements
-
-rust
+- A Rust toolchain to build the application.
+- A Wonderdraft installation to extract and resolve the built-in sprites.
 
 ## Asset folders
 
-Use **Asset folders…** in the toolbar to configure:
+Use the first-start wizard or **Settings…** to configure:
 
 1. **Custom asset folder** — normally:
 
@@ -31,23 +32,23 @@ Linux
    /home/<username>/.local/share/Wonderdraft/assets
    ```
 
-2. **Default sprites folder** — the `sprites` directory extracted from `Wonderdraft.pck`, for example:
+2. **Default sprites folder** — the `sprites` directory extracted from
+   `Wonderdraft.pck`, normally:
 
    ```text
-   /home/user/wonderdraffiles/sprites
+   <application working directory>/wonderdraft_files/sprites
    ```
 
-The program tries common Windows, Linux, and macOS locations automatically. Settings are saved as JSON in:
+The program checks common Windows, Linux, and macOS locations automatically and
+recognizes both `Wonderdraft.pck` and `wonderdraft.pck`. On Linux it checks
+`/opt/Wonderdraft/Wonderdraft.pck`. Settings are saved as JSON in:
 
 ```text
 wonderdraft_gui.config
 ```
 
-
-the tool has it's own pck extractor.
-a copy of the pck extractor can be found under the pck_unpacker folder.
-
-
+The application has its own PCK extractor. Use **Choose Wonderdraft.pck…** in
+the wizard if automatic discovery does not find the installation.
 
 ## SVG export
 

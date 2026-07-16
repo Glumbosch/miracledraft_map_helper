@@ -1,6 +1,9 @@
-# Wonderdraft Map Editor — Rust port
+# Wonderdraft Map Editor — Rust
 
-This directory now contains a native Rust port of `wonderdraft_gui_memory.py`.
+The main installation, setup, workflow, and troubleshooting guide is now
+[`README.md`](README.md). This document records additional implementation notes
+for the native Rust port.
+
 It keeps embedded image buffers disk-backed while maps are open and while they
 are written back to Godot's GCPF/FastLZ container.
 
@@ -32,7 +35,7 @@ helper UI.
 - Choose SVG layers independently with **Background mask**, **Roads / paths**,
   **Symbols**, and **Labels** checkboxes.
 - Resolve custom `user://assets/` and default `res://sprites/` assets.
-- Locate and extract core sprites from `wonderdraft.pck` in the background.
+- Locate and extract core sprites from `Wonderdraft.pck` in the background.
 - Read Wonderdraft's `config.ini` for its recent maps, last-used map folder,
   and optional `custom_assets_directory`.
 - Show the cache size, clear stale cache data on demand, and clear the cache on
@@ -42,22 +45,27 @@ helper UI.
 
 ## Settings and Wonderdraft integration
 
-Open **Settings…** to change the Wonderdraft user-data folder, asset folders,
-and disk cache behavior. The editor checks the standard user-data location for
-the current operating system. If it cannot find `config.ini`, it asks you to
-select the Wonderdraft folder. Automatic custom-asset discovery uses the
-folder's `assets` directory, or the `assets` directory below the path from
-`custom_assets_directory` when Wonderdraft has that setting.
+The first-start wizard explains and configures the Wonderdraft user-data folder,
+core sprites, and disk cache. Open **Settings… → Run setup wizard…** to run it
+again. The same settings can also be edited directly in the Settings window.
+
+The editor checks the standard user-data location for the current operating
+system. Automatic custom-asset discovery uses the folder's `assets` directory,
+or the `assets` directory below the path from `custom_assets_directory` when
+Wonderdraft has that setting.
 
 The toolbar's **Open recent** menu mirrors Wonderdraft's `recently_opened`
 entries. **Open map** starts in Wonderdraft's `last_directory`.
 
 ## Extracting Wonderdraft core assets
 
-Open **Settings…** and select **Locate and extract Wonderdraft core assets…**.
-The editor checks Wonderdraft's standard installation path for the current
-operating system. If the pack is not there, it opens a file chooser for
-`wonderdraft.pck`.
+Use the setup wizard, or open **Settings…** and select **Locate and extract
+Wonderdraft core assets…**. The editor checks Wonderdraft's standard
+installation paths for the current operating system and recognizes both
+`Wonderdraft.pck` and `wonderdraft.pck`. Current Linux installations commonly
+use `/opt/Wonderdraft/Wonderdraft.pck`. If the pack is not found, the editor
+opens a file chooser labelled **Wonderdraft.pck**. Set the `WONDERDRAFT_PCK`
+environment variable to use another path automatically.
 
 Files are unpacked to `wonderdraft_files` beside the working application, every
 `.wonderdraft_image` file is written with a `.png` extension, and the extracted

@@ -25,7 +25,29 @@ pub struct Extraction {
 
 /// Find Wonderdraft's core pack in the standard location for this OS.
 pub fn find_default_pack() -> Option<PathBuf> {
-    default_pack_paths().into_iter().find(|path| path.is_file())
+    if let Some(path) = env::var_os("WONDERDRAFT_PCK").map(PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
+    }
+    find_pack_in(&default_install_dirs())
+}
+
+/// Return a useful starting directory for a manual Wonderdraft.pck chooser.
+pub fn default_pack_directory_hint() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("WONDERDRAFT_PCK").map(PathBuf::from) {
+        let directory = if path.is_dir() {
+            path
+        } else {
+            path.parent()?.to_owned()
+        };
+        if directory.is_dir() {
+            return Some(directory);
+        }
+    }
+    default_install_dirs()
+        .into_iter()
+        .find(|directory| directory.is_dir())
 }
 
 pub fn default_output_dir() -> PathBuf {
@@ -34,26 +56,38 @@ pub fn default_output_dir() -> PathBuf {
         .join("wonderdraft_files")
 }
 
-fn default_pack_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+fn default_install_dirs() -> Vec<PathBuf> {
+    let mut directories = Vec::new();
     if cfg!(target_os = "windows") {
-        paths.push(PathBuf::from(
-            r"C:\Program Files\Wonderdraft\wonderdraft.pck",
-        ));
-        paths.push(PathBuf::from(
-            r"C:\Program Files (x86)\Wonderdraft\wonderdraft.pck",
-        ));
+        for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(root) = env::var_os(variable) {
+                directories.push(PathBuf::from(root).join("Wonderdraft"));
+            }
+        }
+        directories.push(PathBuf::from(r"C:\Program Files\Wonderdraft"));
+        directories.push(PathBuf::from(r"C:\Program Files (x86)\Wonderdraft"));
     } else if cfg!(target_os = "macos") {
-        paths.push(PathBuf::from(
-            "/Applications/Wonderdraft.app/Contents/Resources/wonderdraft.pck",
+        directories.push(PathBuf::from(
+            "/Applications/Wonderdraft.app/Contents/Resources",
         ));
     } else {
-        paths.push(PathBuf::from("/opt/Wonderdraft/wonderdraft.pck"));
+        directories.push(PathBuf::from("/opt/Wonderdraft"));
+        directories.push(PathBuf::from("/opt/wonderdraft"));
         if let Some(home) = env::var_os("HOME") {
-            paths.push(PathBuf::from(home).join("Games/Wonderdraft/wonderdraft.pck"));
+            directories.push(PathBuf::from(home).join("Games/Wonderdraft"));
         }
     }
-    paths
+    directories
+}
+
+fn find_pack_in(directories: &[PathBuf]) -> Option<PathBuf> {
+    // Linux filesystems are normally case-sensitive. Current Wonderdraft builds
+    // use the capitalized name, while older installations may use lowercase.
+    const PACK_NAMES: [&str; 2] = ["Wonderdraft.pck", "wonderdraft.pck"];
+    directories
+        .iter()
+        .flat_map(|directory| PACK_NAMES.map(|name| directory.join(name)))
+        .find(|path| path.is_file())
 }
 
 /// Extract a Godot PCK v1/v2 and make Wonderdraft image resources usable as PNGs.
@@ -211,6 +245,21 @@ mod tests {
         assert!(safe_relative_path("res://sprites/bridge.png").is_ok());
         assert!(safe_relative_path("res://../outside.png").is_err());
         assert!(safe_relative_path("/absolute.png").is_err());
+    }
+
+    #[test]
+    fn finds_capitalized_pack_name_on_case_sensitive_filesystems() {
+        let base = env::temp_dir().join(format!(
+            "wonderdraft-pck-location-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let expected = base.join("Wonderdraft.pck");
+        fs::write(&expected, []).unwrap();
+
+        assert_eq!(find_pack_in(std::slice::from_ref(&base)), Some(expected));
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
