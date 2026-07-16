@@ -1438,30 +1438,29 @@ fn transformed_points(element: &El, position: (f64, f64)) -> Vec<Vec<f32>> {
 }
 
 fn replace_record_points(record: &mut Value, points: Vec<Vec<f32>>) {
+    let vector_array = || {
+        Value::Array(
+            points
+                .iter()
+                .map(|point| Value::Vector {
+                    kind: "Vector2".into(),
+                    values: point.clone(),
+                })
+                .collect(),
+        )
+    };
     let replacement = match record.get("points") {
-        Some(Value::String(_)) => Value::String(godot_text::format(&Value::Array(
-            points
-                .iter()
-                .map(|point| Value::Vector {
-                    kind: "Vector2".into(),
-                    values: point.clone(),
-                })
-                .collect(),
-        ))),
-        Some(Value::Array(_)) => Value::Array(
-            points
-                .iter()
-                .map(|point| Value::Vector {
-                    kind: "Vector2".into(),
-                    values: point.clone(),
-                })
-                .collect(),
-        ),
-        _ => Value::PoolVectors {
+        Some(Value::String(_)) => Value::String(godot_text::format(&vector_array())),
+        Some(Value::Array(_)) => vector_array(),
+        Some(Value::PoolVectors { .. }) => Value::PoolVectors {
             kind: "PoolVector2Array".into(),
             components: 2,
             values: points,
         },
+        // Wonderdraft stores path and territory points as a string containing
+        // an Array of Vector2 values. New SVG elements have no record metadata,
+        // so use that native representation instead of inventing a pooled array.
+        _ => Value::String(godot_text::format(&vector_array())),
     };
     record.set("points", replacement);
 }
@@ -2388,6 +2387,64 @@ mod tests {
                 (60.0, 70.0)
             ]
         );
+    }
+
+    #[test]
+    fn new_paths_and_territories_without_records_use_string_encoded_points() {
+        let base = std::env::temp_dir().join(format!(
+            "wonderdraft-svg-new-point-records-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("new-elements.svg");
+        fs::write(
+            &source,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">
+  <g inkscape:groupmode="layer" inkscape:label="wonderdraft-paths">
+    <path d="M 10,20 L 30,40" fill="none" stroke="#123456" stroke-width="7"/>
+  </g>
+  <g inkscape:groupmode="layer" inkscape:label="wonderdraft-territories">
+    <path d="M 50,60 L 70,60 L 60,80 Z" fill="#abcdef" stroke="#abcdef"/>
+  </g>
+</svg>"##,
+        )
+        .unwrap();
+
+        let mut root = Value::dict();
+        let summary = import(&mut root, &source, &Resolver::new(&Settings::default())).unwrap();
+        assert_eq!(summary.paths, 1);
+        assert_eq!(summary.territories, 1);
+
+        let path = &root.get("paths").and_then(Value::as_array).unwrap()[0];
+        let territory = &root
+            .get("territories")
+            .and_then(|value| value.get("territories"))
+            .and_then(Value::as_array)
+            .unwrap()[0];
+        for (kind, record, expected_count) in
+            [("path", path, 2_usize), ("territory", territory, 3_usize)]
+        {
+            let encoded = record
+                .get("points")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("new {kind} points were not stored as a string"));
+            assert!(
+                !encoded.contains("PoolVector2Array"),
+                "new {kind} used the Wonderdraft-crashing pooled representation"
+            );
+            let Value::Array(points) = godot_text::parse(encoded).unwrap() else {
+                panic!("new {kind} points string did not contain a Vector2 array");
+            };
+            assert_eq!(points.len(), expected_count);
+            assert!(points.iter().all(|point| matches!(
+                point,
+                Value::Vector { kind, values }
+                    if kind == "Vector2" && values.len() == 2
+            )));
+        }
+
+        let _ = fs::remove_dir_all(base);
     }
 
     fn pattern_height(data: &str) -> f64 {
