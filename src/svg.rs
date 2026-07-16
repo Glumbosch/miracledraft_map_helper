@@ -422,9 +422,9 @@ fn local_point(origin: (f64, f64), tangent: (f64, f64), along: f64, across: f64)
     )
 }
 
-fn path_pattern_data(points: &[(f64, f64)], width_units: f64, style: &str) -> String {
-    let scale = width_units.max(0.0);
-    if scale == 0.0 {
+fn path_pattern_data(points: &[(f64, f64)], requested_width: f64, style: &str) -> String {
+    let requested_width = requested_width.max(0.0);
+    if requested_width == 0.0 {
         return String::new();
     }
     let mut data = String::new();
@@ -438,8 +438,9 @@ fn path_pattern_data(points: &[(f64, f64)], width_units: f64, style: &str) -> St
         }
         let tangent = (dx / length, dy / length);
         if style.ends_with("path_directional") {
-            // The source chevron is 50 px high. Wonderdraft width is a scale
-            // factor for patterned paths, rather than an SVG stroke width.
+            // Scale the 50 px-high source motif so its rendered height equals
+            // the requested Wonderdraft path width.
+            let scale = requested_width / 50.0;
             let pattern_height = 50.0 * scale;
             let pattern_length = 65.0 * scale;
             let repeat = 63.0 * scale;
@@ -463,10 +464,11 @@ fn path_pattern_data(points: &[(f64, f64)], width_units: f64, style: &str) -> St
                 offset += repeat;
             }
         } else if style.ends_with("path_double_paired") {
+            let scale = requested_width / 50.0;
             let pattern_height = 50.0 * scale;
             let strip = (pattern_height * 0.18).max(0.1);
-            let gap = pattern_height * 0.24;
-            for center in [-gap, gap] {
+            let center_offset = (pattern_height - strip) / 2.0;
+            for center in [-center_offset, center_offset] {
                 let points = [
                     local_point(start, tangent, 0.0, center - strip / 2.0),
                     local_point(start, tangent, length, center - strip / 2.0),
@@ -477,6 +479,7 @@ fn path_pattern_data(points: &[(f64, f64)], width_units: f64, style: &str) -> St
                 data.push(' ');
             }
         } else if style.ends_with("path_hash_marks") {
+            let scale = requested_width / 100.0;
             let pattern_height = 100.0 * scale;
             let mark_width = (pattern_height * 0.08).max(0.1);
             let repeat = pattern_height * 2.3;
@@ -2387,14 +2390,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn directional_pattern_uses_fifty_pixels_per_width_unit() {
-        let data = path_pattern_data(
-            &[(0.0, 0.0), (200.0, 0.0)],
-            0.1,
-            "res://textures/paths/path_directional",
-        );
-        let points = path_endpoints(&data);
+    fn pattern_height(data: &str) -> f64 {
+        let points = path_endpoints(data);
         let min_y = points
             .iter()
             .map(|point| point.1)
@@ -2403,8 +2400,22 @@ mod tests {
             .iter()
             .map(|point| point.1)
             .fold(f64::NEG_INFINITY, f64::max);
-        assert!((max_y - min_y - 5.0).abs() < 0.000001);
-        assert!(data.matches('M').count() > 10);
+        max_y - min_y
+    }
+
+    #[test]
+    fn patterned_paths_scale_source_height_to_requested_width() {
+        for style in ["path_directional", "path_double_paired", "path_hash_marks"] {
+            let data = path_pattern_data(
+                &[(0.0, 0.0), (300.0, 0.0)],
+                25.0,
+                &format!("res://textures/paths/{style}"),
+            );
+            assert!(
+                (pattern_height(&data) - 25.0).abs() < 0.000001,
+                "{style} did not render at the requested 25 px width"
+            );
+        }
     }
 
     #[test]
@@ -2423,7 +2434,7 @@ mod tests {
                     },
                 ),
                 ("style", Value::String(style.into())),
-                ("width", Value::Real(0.1)),
+                ("width", Value::Real(25.0)),
             ])
         };
         let root = dict(vec![
@@ -2437,6 +2448,8 @@ mod tests {
                     make_path("res://textures/paths/path_dash_dot"),
                     make_path("res://textures/paths/path_dash_dot_dot"),
                     make_path("res://textures/paths/path_directional"),
+                    make_path("res://textures/paths/path_double_paired"),
+                    make_path("res://textures/paths/path_hash_marks"),
                 ]),
             ),
         ]);
@@ -2463,12 +2476,16 @@ mod tests {
         )
         .unwrap();
         let xml = fs::read_to_string(&destination).unwrap();
-        assert!(xml.contains("stroke-dasharray=\"0 0.2\""));
-        assert!(xml.contains("stroke-dasharray=\"0.2 0.2\""));
+        assert!(xml.contains("stroke-dasharray=\"0 50\""));
+        assert!(xml.contains("stroke-dasharray=\"50 50\""));
         assert!(xml.contains("wd:style=\"res://textures/paths/path_directional\""));
-        assert!(xml.contains(
-            "fill=\"#0080ff\" fill-opacity=\"1\" stroke=\"none\" wd:role=\"path-style\""
-        ));
+        assert_eq!(
+            xml.matches(
+                "fill=\"#0080ff\" fill-opacity=\"1\" stroke=\"none\" wd:role=\"path-style\""
+            )
+            .count(),
+            3
+        );
         let _ = fs::remove_file(destination);
     }
 

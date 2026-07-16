@@ -191,9 +191,10 @@ The exporter translates the Wonderdraft path style into SVG styling:
   Wonderdraft path color.
 
 Style 6, `path_directional`, is exported as repeating chevrons. Its source
-pattern is 50 pixels high, and Wonderdraft width is treated as a pattern scale:
-width `1` produces a 50-pixel-high chevron and width `0.1` produces a
-5-pixel-high chevron.
+pattern is 50 pixels high. The exporter divides the requested Wonderdraft width
+by that source height: width `25` therefore applies scale `0.5` and produces a
+25-pixel-high chevron. The other patterned styles use the same proportional
+source-height calculation.
 
 Patterned paths contain an invisible, tagged centerline and a visible path with
 `wd:role="path-style"`. Edit the tagged centerline when changing the road's

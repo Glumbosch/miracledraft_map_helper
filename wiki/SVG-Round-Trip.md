@@ -47,8 +47,8 @@ Saved map after importing the SVG:
 - Roads and territory areas export as SVG `<path>` elements for convenient node
   editing. Edited path endpoints become Wonderdraft point lists on import.
 - Wonderdraft road styles are represented with SVG strokes, dash arrays,
-  outlines, or fill-only pattern geometry. The directional style uses
-  repeating chevrons scaled at 50 pixels per Wonderdraft width unit.
+  outlines, or fill-only pattern geometry. Pattern source geometry is scaled
+  proportionally so its rendered height equals the Wonderdraft path width.
 - Repeated embedded symbols share one image definition and use `<use>` clones.
 - Symbol custom-color modes, transparency, rotation, mirroring, and outlines are
   represented with SVG transforms and reusable filters.
