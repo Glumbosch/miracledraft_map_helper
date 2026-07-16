@@ -769,8 +769,7 @@ mod tests {
         ]);
         let resolver = Resolver::new(&Settings {
             custom_asset_folder: base.to_string_lossy().into_owned(),
-            default_asset_folder: String::new(),
-            cache_folder: String::new(),
+            ..Settings::default()
         });
         let destination = base.join("map.svg");
         let summary = export(

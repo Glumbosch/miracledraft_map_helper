@@ -4,6 +4,7 @@ pub mod fastlz;
 pub mod gcpf;
 pub mod godot_text;
 pub mod images;
+pub mod pck;
 pub mod settings;
 pub mod svg;
 pub mod value;

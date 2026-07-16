@@ -11,7 +11,8 @@ use wonderdraft_editor::{
     assets::Resolver,
     gcpf, godot_text,
     images::{self, BinaryBlobs, Images},
-    settings::{self, Settings},
+    pck,
+    settings::{self, Settings, WonderdraftConfig},
     svg,
     value::image_info,
     variant,
@@ -35,9 +36,14 @@ struct App {
     export_symbols: bool,
     export_labels: bool,
     settings: Settings,
+    settings_backup: Option<Settings>,
+    wonderdraft_config: WonderdraftConfig,
     settings_open: bool,
+    prompt_for_wonderdraft_folder: bool,
+    cache_size_bytes: Option<u64>,
     pending_dialog: Option<Receiver<DialogSelection>>,
     map_load: Option<Receiver<Result<LoadedMap>>>,
+    pck_extraction: Option<Receiver<Result<pck::Extraction>>>,
 }
 
 struct LoadedMap {
@@ -60,6 +66,8 @@ enum DialogAction {
     CustomAssets,
     DefaultSprites,
     CacheFolder,
+    WonderdraftFolder,
+    WonderdraftPck,
 }
 
 struct DialogSelection {
@@ -68,11 +76,30 @@ struct DialogSelection {
 }
 impl Default for App {
     fn default() -> Self {
-        let settings = settings::load();
+        let mut settings = settings::load();
+        let wonderdraft_folder = settings::find_wonderdraft_folder(&settings.wonderdraft_folder);
+        let prompt_for_wonderdraft_folder = wonderdraft_folder.is_none();
+        let wonderdraft_config = wonderdraft_folder
+            .as_deref()
+            .and_then(|folder| {
+                settings.wonderdraft_folder = folder.to_string_lossy().into_owned();
+                settings::read_wonderdraft_config(folder).ok()
+            })
+            .unwrap_or_default();
+        if settings.auto_locate_custom_assets
+            && let Some(folder) = wonderdraft_folder.as_deref()
+        {
+            settings.custom_asset_folder =
+                settings::custom_assets_folder(folder, &wonderdraft_config)
+                    .to_string_lossy()
+                    .into_owned();
+        }
+        let cache_dir = PathBuf::from(&settings.cache_folder);
+        let cache_size_bytes = settings::directory_size(&cache_dir).ok();
         Self {
             text: String::new(),
             root_path: None,
-            cache_dir: PathBuf::from(&settings.cache_folder),
+            cache_dir,
             work_dir: None,
             images: Vec::new(),
             binary_blobs: Vec::new(),
@@ -87,9 +114,14 @@ impl Default for App {
             export_symbols: true,
             export_labels: true,
             settings,
+            settings_backup: None,
+            wonderdraft_config,
             settings_open: false,
+            prompt_for_wonderdraft_folder,
+            cache_size_bytes,
             pending_dialog: None,
             map_load: None,
+            pck_extraction: None,
         }
     }
 }
@@ -148,13 +180,24 @@ impl App {
         }
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
+        let open_directory = self.wonderdraft_config.last_directory.clone();
+        let wonderdraft_directory = if self.settings.wonderdraft_folder.trim().is_empty() {
+            settings::default_wonderdraft_folder()
+        } else {
+            PathBuf::from(&self.settings.wonderdraft_folder)
+        };
         self.pending_dialog = Some(receiver);
         self.status = "File chooser is open…".into();
         std::thread::spawn(move || {
             let path = match &action {
-                DialogAction::OpenMap => rfd::FileDialog::new()
-                    .add_filter("Wonderdraft map", &["wonderdraft_map"])
-                    .pick_file(),
+                DialogAction::OpenMap => {
+                    let mut picker =
+                        rfd::FileDialog::new().add_filter("Wonderdraft map", &["wonderdraft_map"]);
+                    if let Some(directory) = open_directory {
+                        picker = picker.set_directory(directory);
+                    }
+                    picker.pick_file()
+                }
                 DialogAction::SaveMap { file_name } => rfd::FileDialog::new()
                     .set_file_name(file_name)
                     .add_filter("Wonderdraft map", &["wonderdraft_map"])
@@ -174,6 +217,12 @@ impl App {
                 | DialogAction::CustomAssets
                 | DialogAction::DefaultSprites
                 | DialogAction::CacheFolder => rfd::FileDialog::new().pick_folder(),
+                DialogAction::WonderdraftFolder => rfd::FileDialog::new()
+                    .set_directory(wonderdraft_directory)
+                    .pick_folder(),
+                DialogAction::WonderdraftPck => rfd::FileDialog::new()
+                    .add_filter("Wonderdraft core pack", &["pck"])
+                    .pick_file(),
                 DialogAction::ReplaceImage { .. } => rfd::FileDialog::new()
                     .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
                     .pick_file(),
@@ -269,6 +318,40 @@ impl App {
                 }
             }
         }
+        if let Some(receiver) = self.pck_extraction.take() {
+            match receiver.try_recv() {
+                Ok(Ok(extracted)) => {
+                    self.settings.default_asset_folder =
+                        extracted.sprites_dir.to_string_lossy().into_owned();
+                    match settings::save(&self.settings) {
+                        Ok(()) => {
+                            self.status = format!(
+                                "Extracted {} files ({} images renamed) and configured core sprites",
+                                extracted.file_count, extracted.renamed_images
+                            );
+                            dialog(
+                                "Core assets extracted",
+                                &format!(
+                                    "{}\n\nDefault sprites folder:\n{}",
+                                    self.status,
+                                    extracted.sprites_dir.display()
+                                ),
+                                false,
+                            );
+                        }
+                        Err(error) => {
+                            self.fail("Assets extracted, but settings could not be saved", error)
+                        }
+                    }
+                }
+                Ok(Err(error)) => self.fail("Core asset extraction failed", error),
+                Err(TryRecvError::Empty) => self.pck_extraction = Some(receiver),
+                Err(TryRecvError::Disconnected) => self.fail(
+                    "Core asset extraction failed",
+                    "Extractor stopped unexpectedly",
+                ),
+            }
+        }
     }
 
     fn handle_dialog_selection(
@@ -290,6 +373,7 @@ impl App {
             DialogAction::ReplaceImage { index } => self.replace_image_from(index, &path, ctx),
             DialogAction::CustomAssets => {
                 self.settings.custom_asset_folder = path.to_string_lossy().into_owned();
+                self.settings.auto_locate_custom_assets = false;
                 return;
             }
             DialogAction::DefaultSprites => {
@@ -300,10 +384,91 @@ impl App {
                 self.settings.cache_folder = path.to_string_lossy().into_owned();
                 return;
             }
+            DialogAction::WonderdraftFolder => {
+                self.settings.wonderdraft_folder = path.to_string_lossy().into_owned();
+                match self.reload_wonderdraft_config() {
+                    Ok(()) => {
+                        if !self.settings_open {
+                            if let Err(error) = settings::save(&self.settings) {
+                                self.fail(
+                                    "Wonderdraft folder found, but settings could not be saved",
+                                    error,
+                                );
+                                return;
+                            }
+                        }
+                        self.status = "Wonderdraft config.ini loaded".into();
+                    }
+                    Err(error) => self.fail("Wonderdraft config.ini was not found", error),
+                }
+                return;
+            }
+            DialogAction::WonderdraftPck => {
+                self.begin_pck_extraction(path, ctx);
+                return;
+            }
         };
         if let Err(error) = result {
             self.fail("Operation failed", error);
         }
+    }
+    fn reload_wonderdraft_config(&mut self) -> Result<()> {
+        let folder = settings::find_wonderdraft_folder(&self.settings.wonderdraft_folder)
+            .ok_or_else(|| {
+                Error::format(format!(
+                    "Choose the Wonderdraft user-data folder containing config.ini. The current setting is: {}",
+                    empty(&self.settings.wonderdraft_folder)
+                ))
+            })?;
+        let config = settings::read_wonderdraft_config(&folder)?;
+        self.settings.wonderdraft_folder = folder.to_string_lossy().into_owned();
+        if self.settings.auto_locate_custom_assets {
+            self.settings.custom_asset_folder = settings::custom_assets_folder(&folder, &config)
+                .to_string_lossy()
+                .into_owned();
+        }
+        self.wonderdraft_config = config;
+        Ok(())
+    }
+    fn refresh_cache_size(&mut self) {
+        self.cache_size_bytes = settings::directory_size(&self.cache_dir).ok();
+    }
+    fn clear_cache(&mut self) {
+        match settings::clear_cache(&self.cache_dir, self.work_dir.as_deref()) {
+            Ok(()) => {
+                self.refresh_cache_size();
+                self.status = if self.work_dir.is_some() {
+                    "Cleared stale cache data; the open map's active cache was preserved".into()
+                } else {
+                    "Cache cleared".into()
+                };
+            }
+            Err(error) => self.fail("Could not clear cache", error),
+        }
+    }
+    fn begin_core_asset_setup(&mut self, ctx: &egui::Context) {
+        if let Some(pack) = pck::find_default_pack() {
+            self.begin_pck_extraction(pack, ctx);
+        } else {
+            self.status =
+                "Wonderdraft.pck was not found in a default location; choose it now…".into();
+            self.begin_dialog(DialogAction::WonderdraftPck, ctx);
+        }
+    }
+    fn begin_pck_extraction(&mut self, pack: PathBuf, ctx: &egui::Context) {
+        if self.pck_extraction.is_some() {
+            return;
+        }
+        let output = pck::default_output_dir();
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        self.pck_extraction = Some(receiver);
+        self.status = format!("Extracting {} to {}…", pack.display(), output.display());
+        std::thread::spawn(move || {
+            let result = pck::extract(&pack, &output);
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        });
     }
     fn validate(&mut self) {
         match self.parse() {
@@ -320,7 +485,7 @@ impl App {
         self.status = "Streaming map to GCPF output…".into();
         let size = variant::save_map(&root, path, 4096, self.compressed)?;
         if self.verify {
-            let verify_dir = images::temp_cache_dir(&settings::default_cache())?;
+            let verify_dir = images::temp_cache_dir(&self.cache_dir)?;
             let raw = verify_dir.join("verify.variant");
             gcpf::decompress_file(path, &raw, |_, _| {})?;
             let check = variant::decode_file(&raw)?;
@@ -438,6 +603,13 @@ impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         self.poll_background_work(&ctx);
+        if self.prompt_for_wonderdraft_folder && self.pending_dialog.is_none() {
+            self.prompt_for_wonderdraft_folder = false;
+            self.status =
+                "Wonderdraft config.ini was not found automatically; choose its user-data folder…"
+                    .into();
+            self.begin_dialog(DialogAction::WonderdraftFolder, &ctx);
+        }
 
         let dropped_paths = ctx.input(|input| {
             input
@@ -464,7 +636,11 @@ impl eframe::App for App {
             );
         }
 
-        let busy = self.pending_dialog.is_some() || self.map_load.is_some();
+        let busy = self.pending_dialog.is_some()
+            || self.map_load.is_some()
+            || self.pck_extraction.is_some();
+        let recent_paths = self.wonderdraft_config.recently_opened.clone();
+        let mut recent_selection = None;
         egui::Panel::top("toolbar").show(root_ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui
@@ -473,6 +649,27 @@ impl eframe::App for App {
                 {
                     self.begin_dialog(DialogAction::OpenMap, &ctx);
                 }
+                ui.add_enabled_ui(!busy, |ui| {
+                    ui.menu_button("Open recent", |ui| {
+                        if recent_paths.is_empty() {
+                            ui.label("No recent maps in Wonderdraft's config.ini");
+                        }
+                        for path in &recent_paths {
+                            let available = is_wonderdraft_map(path);
+                            let response = ui
+                                .add_enabled(available, egui::Button::new(path.to_string_lossy()));
+                            if !available {
+                                response
+                                    .clone()
+                                    .on_disabled_hover_text("This file no longer exists");
+                            }
+                            if response.clicked() {
+                                recent_selection = Some(path.clone());
+                                ui.close();
+                            }
+                        }
+                    });
+                });
                 if ui.button("Validate text").clicked() {
                     self.validate()
                 }
@@ -500,7 +697,9 @@ impl eframe::App for App {
                 if ui.button("Export all PNGs").clicked() {
                     self.begin_dialog(DialogAction::ExportAllImages, &ctx);
                 }
-                if ui.button("Asset folders…").clicked() {
+                if ui.button("Settings…").clicked() {
+                    self.settings_backup = Some(self.settings.clone());
+                    self.refresh_cache_size();
                     self.settings_open = true;
                 }
                 ui.checkbox(&mut self.compressed, "Compress saved map");
@@ -512,6 +711,8 @@ impl eframe::App for App {
                     ui.spinner();
                     ui.label(if self.pending_dialog.is_some() {
                         "File chooser is open — the editor remains responsive"
+                    } else if self.pck_extraction.is_some() {
+                        "Extracting Wonderdraft core assets in the background"
                     } else {
                         "Loading map in the background"
                     });
@@ -526,6 +727,9 @@ impl eframe::App for App {
             });
             ui.label(&self.status);
         });
+        if let Some(path) = recent_selection {
+            self.begin_map_load(path, &ctx);
+        }
         egui::Panel::right("images")
             .default_size(300.)
             .show(root_ui, |ui| {
@@ -603,42 +807,137 @@ impl eframe::App for App {
         });
         if self.settings_open {
             let mut open = self.settings_open;
-            let mut close = false;
-            egui::Window::new("Wonderdraft asset folders")
+            let mut saved = false;
+            let mut cancelled = false;
+            egui::Window::new("Settings")
                 .open(&mut open)
+                .default_width(620.0)
                 .show(&ctx, |ui| {
+                    ui.heading("Wonderdraft");
+                    ui.label("User-data folder (contains config.ini)");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.wonderdraft_folder)
+                                .desired_width(480.0),
+                        );
+                        if ui.button("Browse…").clicked() {
+                            self.begin_dialog(DialogAction::WonderdraftFolder, &ctx);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.settings.auto_locate_custom_assets,
+                            "Automatically locate the custom assets folder from config.ini",
+                        );
+                        if ui.button("Reload config.ini").clicked() {
+                            match self.reload_wonderdraft_config() {
+                                Ok(()) => self.status = "Wonderdraft config.ini reloaded".into(),
+                                Err(error) => self.fail("Could not reload Wonderdraft config.ini", error),
+                            }
+                        }
+                    });
                     ui.label("Custom asset folder");
-                    ui.text_edit_singleline(&mut self.settings.custom_asset_folder);
-                    if ui.button("Browse custom…").clicked() {
-                        self.begin_dialog(DialogAction::CustomAssets, &ctx);
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(
+                            !self.settings.auto_locate_custom_assets,
+                            egui::TextEdit::singleline(&mut self.settings.custom_asset_folder)
+                                .desired_width(480.0),
+                        );
+                        if ui
+                            .add_enabled(
+                                !self.settings.auto_locate_custom_assets,
+                                egui::Button::new("Browse…"),
+                            )
+                            .clicked()
+                        {
+                            self.begin_dialog(DialogAction::CustomAssets, &ctx);
+                        }
+                    });
+                    if self.settings.auto_locate_custom_assets {
+                        ui.small("Uses <Wonderdraft folder>/assets, or <custom_assets_directory>/assets when that key is present.");
                     }
                     ui.label("Default sprites folder");
-                    ui.text_edit_singleline(&mut self.settings.default_asset_folder);
-                    if ui.button("Browse sprites…").clicked() {
-                        self.begin_dialog(DialogAction::DefaultSprites, &ctx);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.default_asset_folder)
+                                .desired_width(480.0),
+                        );
+                        if ui.button("Browse…").clicked() {
+                            self.begin_dialog(DialogAction::DefaultSprites, &ctx);
+                        }
+                    });
+                    if ui
+                        .add_enabled(
+                            self.pending_dialog.is_none() && self.pck_extraction.is_none(),
+                            egui::Button::new("Locate and extract Wonderdraft core assets…"),
+                        )
+                        .clicked()
+                    {
+                        self.begin_core_asset_setup(&ctx);
                     }
+
+                    ui.separator();
+                    ui.heading("Cache");
                     ui.label("Disk cache folder");
-                    ui.text_edit_singleline(&mut self.settings.cache_folder);
-                    if ui.button("Browse cache…").clicked() {
-                        self.begin_dialog(DialogAction::CacheFolder, &ctx);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.cache_folder)
+                                .desired_width(480.0),
+                        );
+                        if ui.button("Browse…").clicked() {
+                            self.begin_dialog(DialogAction::CacheFolder, &ctx);
+                        }
+                    });
+                    ui.checkbox(
+                        &mut self.settings.clear_cache_on_exit,
+                        "Clear the cache when the program exits",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Clear cache now").clicked() {
+                            self.clear_cache();
+                        }
+                        ui.label(format!(
+                            "Current size: {}",
+                            self.cache_size_bytes
+                                .map(format_byte_size)
+                                .unwrap_or_else(|| "unavailable".into())
+                        ));
+                    });
+                    if self.work_dir.is_some() {
+                        ui.small("The cache for the currently open map is kept until the map is replaced or the program exits.");
                     }
+
+                    ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
-                            match settings::save(&self.settings) {
+                            let cache = PathBuf::from(self.settings.cache_folder.trim());
+                            let result = fs::create_dir_all(&cache)
+                                .map_err(|error| Error::format(error.to_string()))
+                                .and_then(|()| self.reload_wonderdraft_config())
+                                .and_then(|()| settings::save(&self.settings));
+                            match result {
                                 Ok(()) => {
                                     self.cache_dir = PathBuf::from(&self.settings.cache_folder);
+                                    self.refresh_cache_size();
                                     self.status = "Settings saved".into();
-                                    close = true
+                                    self.settings_backup = None;
+                                    saved = true;
                                 }
                                 Err(e) => self.fail("Settings failed", e),
                             }
                         }
                         if ui.button("Cancel").clicked() {
-                            close = true;
+                            cancelled = true;
                         }
                     });
                 });
-            self.settings_open = open && !close;
+            if cancelled || (!open && !saved) {
+                if let Some(previous) = self.settings_backup.take() {
+                    self.settings = previous;
+                    let _ = self.reload_wonderdraft_config();
+                }
+            }
+            self.settings_open = open && !saved && !cancelled;
         }
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
@@ -661,8 +960,13 @@ impl eframe::App for App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if let Some(work_dir) = self.work_dir.take() {
-            let _ = fs::remove_dir_all(work_dir);
+        if self.settings.clear_cache_on_exit {
+            if let Some(work_dir) = self.work_dir.take()
+                && !work_dir.starts_with(&self.cache_dir)
+            {
+                let _ = fs::remove_dir_all(work_dir);
+            }
+            let _ = settings::clear_cache(&self.cache_dir, None);
         }
     }
 }
@@ -676,6 +980,21 @@ fn is_wonderdraft_map(path: &Path) -> bool {
 }
 fn empty(s: &str) -> &str {
     if s.is_empty() { "not configured" } else { s }
+}
+
+fn format_byte_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
 }
 
 fn main() -> eframe::Result {

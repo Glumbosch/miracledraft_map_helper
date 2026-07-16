@@ -1,6 +1,6 @@
-# Wonderdraft Map Editor — SVG edition
+# Wonderdraft Map Editor 
 
-Experimental desktop editor for Wonderdraft `.wonderdraft_map` files. It has been tested against the supplied Wonderdraft map format version 15.
+Experimental desktop editor for Wonderdraft `.wonderdraft_map` files. 
 
 ## Main features
 
@@ -11,29 +11,14 @@ Experimental desktop editor for Wonderdraft `.wonderdraft_map` files. It has bee
 - Imports edited SVG text, symbol images/circles, and paths back into the map.
 - Resolves `user://assets/...` custom textures and `res://sprites/...` default textures.
 - Saves a new FastLZ-compressed `.wonderdraft_map` and verifies it by decoding it again.
-- Stores asset-folder settings in `wonderdraft_gui.config` beside `wonderdraft_gui.py`.
 
-## Requirements
+## Installtion Requirements
 
-Python 3.10 or newer is recommended. Install Pillow:
+a copy of wonderdraft (for extracting the assets)
 
-```bash
-python -m pip install pillow
-```
+## Build requirements
 
-Tkinter is included with most Windows Python installations. On Ubuntu/Debian:
-
-```bash
-sudo apt install python3-tk
-```
-
-Start the program:
-
-```bash
-python wonderdraft_gui.py
-```
-
-Windows users can double-click `start_wonderdraft_editor.bat`. Linux users can run `./start_wonderdraft_editor.sh`.
+rust
 
 ## Asset folders
 
@@ -41,6 +26,7 @@ Use **Asset folders…** in the toolbar to configure:
 
 1. **Custom asset folder** — normally:
 
+Linux
    ```text
    /home/<username>/.local/share/Wonderdraft/assets
    ```
@@ -48,7 +34,7 @@ Use **Asset folders…** in the toolbar to configure:
 2. **Default sprites folder** — the `sprites` directory extracted from `Wonderdraft.pck`, for example:
 
    ```text
-   /home/wolf/code/wonderdraft_manipulator/sprites
+   /home/user/wonderdraffiles/sprites
    ```
 
 The program tries common Windows, Linux, and macOS locations automatically. Settings are saved as JSON in:
@@ -57,15 +43,11 @@ The program tries common Windows, Linux, and macOS locations automatically. Sett
 wonderdraft_gui.config
 ```
 
-The file is always read from the same directory as `wonderdraft_gui.py`.
 
-A default asset extraction command is:
+the tool has it's own pck extractor.
+a copy of the pck extractor can be found under the pck_unpacker folder.
 
-```bash
-./GodotPCKExplorer.Console -e "/opt/Wonderdraft/Wonderdraft.pck" "/home/username/documents/wonderdraftfiles"
-```
 
-Then select the resulting `sprites` directory in the editor.
 
 ## SVG export
 
@@ -124,7 +106,7 @@ Replacement images must use the original dimensions. They are converted to RGBA8
 ## Important limitations
 
 - Keep an untouched backup of every map.
-- The implementation has not been tested against every Wonderdraft release and every map feature.
+- The implementation has only been tested against  Wonderdraft 1.1.8.2  release and a limited set of map features.
 - Existing path records are preserved when the exporter can locate their point array. Wonderdraft path schemas can vary, so newly created, untagged SVG strokes use a conservative generic path record and should be tested in Wonderdraft.
 - Curved Wonderdraft labels retain their metadata, but SVG export currently renders them as ordinary text rather than SVG text-on-path.
 - Label glow is retained in metadata but is not visually reproduced in the SVG.

@@ -32,8 +32,36 @@ helper UI.
 - Choose SVG layers independently with **Background mask**, **Roads / paths**,
   **Symbols**, and **Labels** checkboxes.
 - Resolve custom `user://assets/` and default `res://sprites/` assets.
+- Locate and extract core sprites from `wonderdraft.pck` in the background.
+- Read Wonderdraft's `config.ini` for its recent maps, last-used map folder,
+  and optional `custom_assets_directory`.
+- Show the cache size, clear stale cache data on demand, and clear the cache on
+  exit by default.
 - Persist asset and disk-cache settings in `wonderdraft_gui.config` beside the
   executable.
+
+## Settings and Wonderdraft integration
+
+Open **Settings…** to change the Wonderdraft user-data folder, asset folders,
+and disk cache behavior. The editor checks the standard user-data location for
+the current operating system. If it cannot find `config.ini`, it asks you to
+select the Wonderdraft folder. Automatic custom-asset discovery uses the
+folder's `assets` directory, or the `assets` directory below the path from
+`custom_assets_directory` when Wonderdraft has that setting.
+
+The toolbar's **Open recent** menu mirrors Wonderdraft's `recently_opened`
+entries. **Open map** starts in Wonderdraft's `last_directory`.
+
+## Extracting Wonderdraft core assets
+
+Open **Settings…** and select **Locate and extract Wonderdraft core assets…**.
+The editor checks Wonderdraft's standard installation path for the current
+operating system. If the pack is not there, it opens a file chooser for
+`wonderdraft.pck`.
+
+Files are unpacked to `wonderdraft_files` beside the working application, every
+`.wonderdraft_image` file is written with a `.png` extension, and the extracted
+`wonderdraft_files/sprites` directory is saved as the default sprites folder.
 
 The Rust modules are deliberately separated so the binary format and SVG code
 can be tested without launching the GUI. Run the test suite with:
