@@ -1,26 +1,39 @@
 # Editing SVG for Import
 
-Wonderdraft Map Editor imports tagged SVG elements. The element's parent group
-does **not** decide whether it is imported; the `wd:kind` attribute on the
-element does.
+Wonderdraft Map Editor imports elements identified either by `wd:kind` or by
+their element type inside a recognized Wonderdraft Inkscape layer. Tagged
+elements can remain anywhere in the document; layer recognition is primarily
+useful for newly created elements that do not have Wonderdraft metadata yet.
 
 ## Which group must an element be in?
 
-No particular group is required. The importer scans the entire SVG document
-and recognizes tagged elements wherever they appear. Parent and element
-`transform` attributes are applied to imported geometry.
+No particular group is required for an element that keeps `wd:kind`. The
+importer scans the entire SVG document and recognizes tagged elements wherever
+they appear. Parent and element `transform` attributes are applied to imported
+geometry.
 
-The exporter creates these groups for organization:
+The exporter creates these groups as real Inkscape layers. Each group has a
+matching `id` and `inkscape:label`, plus
+`inkscape:groupmode="layer"`:
 
 - `wonderdraft-paths`
 - `wonderdraft-territories`
 - `wonderdraft-symbols`
 - `wonderdraft-labels`
+- `wonderdraft-mask-background`
 
-Keeping elements in their exported groups is recommended because it makes the
-file easier to understand, but group IDs and element IDs are not used for
-recognition. Moving a tagged element to another group does not stop it from
-being imported.
+An untagged element is imported when its type matches its recognized layer:
+
+- `<text>` in `wonderdraft-labels`
+- `<image>`, `<use>`, or `<circle>` in `wonderdraft-symbols`
+- `<path>` or `<polyline>` in `wonderdraft-paths`
+- `<path>` or `<polygon>` in `wonderdraft-territories`
+
+The layer may be identified by either `id` or `inkscape:label`, so renaming the
+other attribute does not break recognition. Moving a tagged element to another
+group does not stop it from being imported. Elements with a `wd:role`
+attribute are decorative export geometry and are not inferred as new map
+objects.
 
 Apply editable colors and widths directly to the tagged element. The importer
 does not inherit `fill`, `stroke`, or `stroke-width` from a parent group's CSS
@@ -34,7 +47,7 @@ The SVG root must keep the Wonderdraft namespace declaration:
 xmlns:wd="urn:wonderdraft-map-editor"
 ```
 
-Every importable element needs `wd:kind`:
+Exported elements use `wd:kind`:
 
 ```xml
 wd:kind="path"
@@ -44,11 +57,12 @@ wd:kind="label"
 ```
 
 Keep `wd:record` as well. It contains the URL-safe Base64 encoding of the
-original Wonderdraft record. The importer can create a minimal record when it
-is missing, but fields that SVG cannot express—such as path roughness, border
-style, symbol type, or label glow—will be lost. For a reliable round trip,
-treat both `wd:kind` and `wd:record` as required and do not edit the encoded
-record by hand.
+original Wonderdraft record. The importer can create a record for a supported
+untagged element in the correct layer, but fields that SVG cannot express—such
+as path roughness, symbol type, or label glow—will use defaults. Untagged roads
+default to `res://textures/paths/path_blended`; untagged territories default to
+`res://textures/borders/border_solid`. For the most reliable round trip, keep
+both `wd:kind` and `wd:record` and do not edit the encoded record by hand.
 
 `id` and Inkscape-specific attributes are not required.
 
@@ -162,6 +176,29 @@ Hex colors in `#RGB`, `#RGBA`, `#RRGGBB`, and `#RRGGBBAA` form are supported.
 Keep `wd:record` to preserve path fields that are not visually editable in SVG,
 including `style`, `roughness`, `straight`, `noise_seed`, and `z_index`.
 
+### Exported line styles
+
+The exporter translates the Wonderdraft path style into SVG styling:
+
+- `path_blended` and `path_solid` use ordinary strokes.
+- `path_circle`, `path_dash`, `path_dash_dot`, and `path_dash_dot_dot` use SVG
+  line caps and dash arrays.
+- `path_solid_outlined` uses a wider decorative outline below the editable
+  centerline.
+- `path_directional`, `path_double_paired`, and `path_hash_marks` use
+  fill-only pattern geometry with no stroke border. The fill uses the
+  Wonderdraft path color.
+
+Style 6, `path_directional`, is exported as repeating chevrons. Its source
+pattern is 50 pixels high, and Wonderdraft width is treated as a pattern scale:
+width `1` produces a 50-pixel-high chevron and width `0.1` produces a
+5-pixel-high chevron.
+
+Patterned paths contain an invisible, tagged centerline and a visible path with
+`wd:role="path-style"`. Edit the tagged centerline when changing the road's
+points. The decorative path is ignored during import so it does not create a
+duplicate road.
+
 ## Territories
 
 Edit the primary `<path wd:kind="territory">` element:
@@ -220,8 +257,13 @@ Keep the exported `<text>` element with:
 - `font-family`, `font-style`, and `font-weight`
 - `transform` when the label is rotated or moved through a transform
 
-The importer updates position, size, rotation, text, and mapped Wonderdraft
-font. The encoded record preserves other label fields.
+The importer updates position, size, rotation, text, fill color, and mapped
+Wonderdraft font. An untagged `<text>` element in the labels layer starts with
+the current theme's `Town` label preset. SVG position, text, font size, and fill
+color then override the preset values. If the requested SVG font does not
+match a default or discovered custom Wonderdraft font, the Town preset's font
+is retained. The encoded record preserves other label fields for tagged
+labels.
 
 ## Background mask
 
@@ -242,5 +284,6 @@ for that operation.
 6. Import the SVG, review the imported item counts, and use **Save map as…**.
 7. Open the new map in Wonderdraft and verify it visually.
 
-If the import count is zero, first check that the element still has `wd:kind`
-and that the SVG root still declares `xmlns:wd`.
+If the import count is zero, first check that the element still has `wd:kind`,
+or that an untagged element is inside the correctly named Wonderdraft layer.
+Tagged files must also keep the SVG root's `xmlns:wd` declaration.

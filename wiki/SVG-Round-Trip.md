@@ -34,15 +34,23 @@ Saved map after importing the SVG:
 
 ## Round-trip behavior
 
-- `wd:*` attributes retain the original Wonderdraft records. Untagged SVG
-  elements are imported on a best-effort basis.
+- Export groups are Inkscape layers whose `id` and `inkscape:label` use the
+  `wonderdraft-*` names shown in the Layers panel.
+- `wd:*` attributes retain the original Wonderdraft records. Supported
+  untagged elements are also imported when placed in the matching Wonderdraft
+  layer.
 - Roads and territory areas export as SVG `<path>` elements for convenient node
   editing. Edited path endpoints become Wonderdraft point lists on import.
+- Wonderdraft road styles are represented with SVG strokes, dash arrays,
+  outlines, or fill-only pattern geometry. The directional style uses
+  repeating chevrons scaled at 50 pixels per Wonderdraft width unit.
 - Repeated embedded symbols share one image definition and use `<use>` clones.
 - Symbol custom-color modes, transparency, rotation, mirroring, and outlines are
   represented with SVG transforms and reusable filters.
 - Labels retain mapped font family, style, weight, outlines, and glow where the
   source data provides them.
+- New untagged text in the labels layer uses the theme's Town preset as its
+  fallback, while its SVG text, position, size, and color are imported.
 - Territory opacity and supported solid, dashed, gradient, and dark-dot borders
   are represented in SVG.
 

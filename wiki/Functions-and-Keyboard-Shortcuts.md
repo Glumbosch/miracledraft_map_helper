@@ -39,7 +39,10 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Embed symbols in SVG** | Embeds each distinct source symbol once and reuses it with SVG `<use>` elements, making the SVG portable without duplicating image data. |
 
 The **SVG export layers** checkboxes independently include or exclude the
-background mask, roads/paths, symbols, labels, and territories.
+background mask, roads/paths, symbols, labels, and territories. Included
+groups are written as named Inkscape layers. The importer can infer newly
+created, untagged elements from these layer names when their SVG element type
+matches the layer.
 
 ## Map data editor
 
