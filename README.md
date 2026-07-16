@@ -67,10 +67,27 @@ later with **Settings… → Run setup wizard…**.
 2. Extract the core sprites. If `Wonderdraft.pck` is found automatically, click
    **Extract detected Wonderdraft.pck**. Otherwise click
    **Choose Wonderdraft.pck…** and select the file manually.
-3. Confirm the disk-cache folder and finish setup.
+3. Optionally install the extracted fonts from `wonderdraft_files/fonts/` for
+   the current user. This does not require administrator access.
+4. Confirm the disk-cache folder and finish setup.
 
-The Wonderdraft integration and sprite extraction are optional. You can finish
-the wizard without them and configure them later.
+The Wonderdraft integration, sprite extraction, and font installation are
+optional. You can finish the wizard without them and configure them later.
+
+The font step supports TrueType and OpenType font files (`.ttf`, `.otf`,
+`.ttc`, and `.otc`) and installs into the platform's per-user font folder:
+
+- Linux: `$XDG_DATA_HOME/fonts`, or `~/.local/share/fonts`
+- macOS: `~/Library/Fonts`
+- Windows: `%LOCALAPPDATA%\Microsoft\Windows\Fonts`
+
+Existing identical fonts are counted as already installed. If the destination
+contains a different font with the same filename, the installer keeps that
+file unchanged and reports the conflict. Linux runs `fc-cache` when available;
+Windows registers the fonts for the current user and notifies running
+applications; macOS automatically observes its user Fonts folder. Some already
+running applications may still need to be restarted before newly installed
+fonts appear.
 
 ### Wonderdraft.pck discovery
 
@@ -93,7 +110,8 @@ WONDERDRAFT_PCK=/another/location/Wonderdraft.pck \
 
 Extracted files are written to `wonderdraft_files` in the application's working
 directory. Wonderdraft image resources are given a `.png` extension, and
-`wonderdraft_files/sprites` is saved as the default sprites folder.
+`wonderdraft_files/sprites` is saved as the default sprites folder. Extracted
+fonts remain in `wonderdraft_files/fonts/` even after they are installed.
 
 ## Main workflows
 

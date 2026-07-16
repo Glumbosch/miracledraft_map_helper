@@ -9,7 +9,7 @@ use std::{
 use wonderdraft_editor::{
     Error, Result, Value,
     assets::Resolver,
-    gcpf, godot_text,
+    fonts, gcpf, godot_text,
     images::{self, BinaryBlobs, Images},
     pck,
     settings::{self, Settings, WonderdraftConfig},
@@ -47,6 +47,7 @@ struct App {
     pending_dialog: Option<Receiver<DialogSelection>>,
     map_load: Option<Receiver<Result<LoadedMap>>>,
     pck_extraction: Option<Receiver<Result<pck::Extraction>>>,
+    font_installation: Option<Receiver<Result<fonts::Installation>>>,
     search_open: bool,
     search_query: String,
     search_from: usize,
@@ -135,6 +136,7 @@ impl Default for App {
             pending_dialog: None,
             map_load: None,
             pck_extraction: None,
+            font_installation: None,
             search_open: false,
             search_query: String::new(),
             search_from: 0,
@@ -384,6 +386,35 @@ impl App {
                 ),
             }
         }
+        if let Some(receiver) = self.font_installation.take() {
+            match receiver.try_recv() {
+                Ok(Ok(installed)) => {
+                    self.status = format!(
+                        "Wonderdraft fonts: {} installed, {} already present, {} conflicts",
+                        installed.installed, installed.already_installed, installed.conflicts
+                    );
+                    let mut message = format!(
+                        "{} font files found\n{} newly installed\n{} already installed\n{} same-name conflicts left unchanged\n\nUser font folder:\n{}",
+                        installed.discovered,
+                        installed.installed,
+                        installed.already_installed,
+                        installed.conflicts,
+                        installed.destination.display()
+                    );
+                    if !installed.warnings.is_empty() {
+                        message.push_str("\n\nNotes:\n");
+                        message.push_str(&installed.warnings.join("\n"));
+                    }
+                    dialog("Wonderdraft fonts installed", &message, false);
+                }
+                Ok(Err(error)) => self.fail("Wonderdraft font installation failed", error),
+                Err(TryRecvError::Empty) => self.font_installation = Some(receiver),
+                Err(TryRecvError::Disconnected) => self.fail(
+                    "Wonderdraft font installation failed",
+                    "Font installer stopped unexpectedly",
+                ),
+            }
+        }
     }
 
     fn handle_dialog_selection(
@@ -503,6 +534,21 @@ impl App {
             repaint.request_repaint();
         });
     }
+    fn begin_font_installation(&mut self, ctx: &egui::Context) {
+        if self.font_installation.is_some() {
+            return;
+        }
+        let source = fonts::source_dir();
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        self.font_installation = Some(receiver);
+        self.status = format!("Installing Wonderdraft fonts from {}…", source.display());
+        std::thread::spawn(move || {
+            let result = fonts::install_for_current_user(&source);
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        });
+    }
     fn complete_setup(&mut self) -> Result<()> {
         if self.settings.cache_folder.trim().is_empty() {
             self.settings.cache_folder = settings::default_cache().to_string_lossy().into_owned();
@@ -530,18 +576,19 @@ impl App {
             .default_width(620.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!("Step {} of 4", self.setup_step + 1));
+                ui.label(format!("Step {} of 5", self.setup_step + 1));
                 ui.separator();
                 match self.setup_step {
                     0 => {
                         ui.heading("Welcome");
                         ui.label(
-                            "This wizard connects the editor to Wonderdraft and prepares the core sprites needed for accurate SVG symbol export.",
+                            "This wizard connects the editor to Wonderdraft and prepares its core assets for map and SVG editing.",
                         );
                         ui.add_space(8.0);
                         ui.label("The wizard will help you:");
                         ui.label("• locate Wonderdraft's user-data folder and custom assets");
                         ui.label("• locate and extract Wonderdraft.pck");
+                        ui.label("• optionally install the extracted Wonderdraft fonts");
                         ui.label("• choose a writable disk-cache folder");
                         ui.add_space(8.0);
                         ui.small("No maps are changed during setup. Core files are only extracted after you choose that action.");
@@ -646,6 +693,55 @@ impl App {
                             pck::default_output_dir().display()
                         ));
                     }
+                    3 => {
+                        ui.heading("Wonderdraft fonts");
+                        ui.label(
+                            "Optionally install the fonts extracted from Wonderdraft.pck for your user account. Administrator access is not required.",
+                        );
+                        ui.add_space(6.0);
+                        let source = fonts::source_dir();
+                        ui.label(format!("Source: {}", source.display()));
+                        match fonts::user_fonts_dir() {
+                            Ok(destination) => {
+                                ui.label(format!("User font folder: {}", destination.display()));
+                            }
+                            Err(error) => {
+                                ui.colored_label(egui::Color32::YELLOW, error.to_string());
+                            }
+                        }
+                        if source.is_dir() {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(70, 170, 90),
+                                "Extracted fonts are ready to install.",
+                            );
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "No extracted fonts were found. Go back and extract Wonderdraft.pck, or skip this optional step.",
+                            );
+                        }
+                        ui.add_space(6.0);
+                        if ui
+                            .add_enabled(
+                                source.is_dir()
+                                    && self.pck_extraction.is_none()
+                                    && self.font_installation.is_none(),
+                                egui::Button::new("Install Wonderdraft fonts for this user"),
+                            )
+                            .clicked()
+                        {
+                            self.begin_font_installation(ctx);
+                        }
+                        if self.font_installation.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Installing fonts and refreshing the font registry…");
+                            });
+                        }
+                        ui.small(
+                            "Fonts that are already installed are skipped. A different existing font with the same filename is preserved and reported.",
+                        );
+                    }
                     _ => {
                         ui.heading("Cache and summary");
                         ui.label("Disk cache folder");
@@ -697,6 +793,14 @@ impl App {
                                 "not extracted (can be configured later)"
                             }
                         ));
+                        ui.label(format!(
+                            "Wonderdraft fonts: {}",
+                            if fonts::source_dir().is_dir() {
+                                "available to install from the previous step"
+                            } else {
+                                "not extracted (optional)"
+                            }
+                        ));
                         ui.small("You can run this wizard again from Settings at any time.");
                     }
                 }
@@ -709,14 +813,15 @@ impl App {
                     {
                         self.setup_step -= 1;
                     }
-                    if self.setup_step < 3 {
+                    if self.setup_step < 4 {
                         if ui.button("Next").clicked() {
                             self.setup_step += 1;
                         }
                     } else if ui
                         .add_enabled(
                             self.pending_dialog.is_none()
-                                && self.pck_extraction.is_none(),
+                                && self.pck_extraction.is_none()
+                                && self.font_installation.is_none(),
                             egui::Button::new("Finish setup"),
                         )
                         .clicked()
@@ -960,7 +1065,8 @@ impl eframe::App for App {
 
         let busy = self.pending_dialog.is_some()
             || self.map_load.is_some()
-            || self.pck_extraction.is_some();
+            || self.pck_extraction.is_some()
+            || self.font_installation.is_some();
         let mut recent_selection = None;
         egui::Panel::top("toolbar").show(root_ui, |ui| {
             ui.horizontal_wrapped(|ui| {

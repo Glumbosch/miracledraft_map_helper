@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod error;
 pub mod fastlz;
+pub mod fonts;
 pub mod gcpf;
 pub mod godot_text;
 pub mod images;
