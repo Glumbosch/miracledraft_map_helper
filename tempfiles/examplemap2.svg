@@ -37,7 +37,7 @@
      inkscape:window-maximized="1"
      inkscape:current-layer="svg1" />
   <metadata
-     id="metadata1">Wonderdraft Map Editor SVG interchange file</metadata>
+     id="metadata1">Miracledraft Map Helper SVG interchange file</metadata>
   <g
      id="wonderdraft-paths"
      transform="translate(7.1013216,-31.136564)">
@@ -139,7 +139,7 @@
        wd:offset-y="0"
        wd:export-width="125.09999668598175"
        wd:export-height="69.29999816417694"
-       xlink:href=".local/share/wonderdraft-map-extractor/wonderdraft_files/sprites/mountains/playful_jagged_peaks/peak_13.png" />
+     xlink:href=".local/share/miracledraft-map-helper/wonderdraft_files/sprites/mountains/playful_jagged_peaks/peak_13.png" />
     <image
        id="wonderdraft-symbol-1"
        x="960.2265642285347"
@@ -157,7 +157,7 @@
        wd:offset-y="0"
        wd:export-width="130.4999965429306"
        wd:export-height="93.59999752044678"
-       xlink:href=".local/share/wonderdraft-map-extractor/wonderdraft_files/sprites/mountains/playful_jagged_peaks/peak_09.png" />
+     xlink:href=".local/share/miracledraft-map-helper/wonderdraft_files/sprites/mountains/playful_jagged_peaks/peak_09.png" />
   </g>
   <g
      id="wonderdraft-labels">

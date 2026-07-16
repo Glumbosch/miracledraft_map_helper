@@ -2,7 +2,7 @@
 
 ## Keyboard shortcuts
 
-These are the shortcuts implemented specifically by Wonderdraft Map Editor.
+These are the shortcuts implemented specifically by Miracledraft Map Helper.
 
 | Shortcut | Context | Function |
 | --- | --- | --- |

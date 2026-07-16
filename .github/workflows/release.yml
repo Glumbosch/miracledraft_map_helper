@@ -39,13 +39,13 @@ jobs:
         include:
           - name: Linux x86_64
             os: ubuntu-22.04
-            artifact: wonderdraft-editor-linux-x86_64
+            artifact: miracledraft-map-helper-linux-x86_64
           - name: Windows x86_64
             os: windows-latest
-            artifact: wonderdraft-editor-windows-x86_64
+            artifact: miracledraft-map-helper-windows-x86_64
           - name: macOS Apple Silicon
             os: macos-15
-            artifact: wonderdraft-editor-macos-aarch64
+            artifact: miracledraft-map-helper-macos-aarch64
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -73,11 +73,11 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          package="wonderdraft-editor-${version}-linux-x86_64"
+          package="miracledraft-map-helper-${version}-linux-x86_64"
           mkdir -p "dist/$package"
-          install -m 755 target/release/wonderdraft-editor "dist/$package/wonderdraft-editor"
+          install -m 755 target/release/miracledraft-map-helper "dist/$package/miracledraft-map-helper"
           install -m 755 install-linux-launcher.sh "dist/$package/install-linux-launcher.sh"
-          install -m 644 README.md LICENSE AI_DISCLOSURE.md wonderdraft_font_names.txt wonderdraft-map-extractor.desktop wonderdraft_map_extractor.png wonderdraft_map_extractor.svg "dist/$package/"
+          install -m 644 README.md LICENSE AI_DISCLOSURE.md wonderdraft_font_names.txt miracledraft-map-helper.desktop miracledraft_map_helper.png miracledraft_map_helper.svg "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
       - name: Package Windows archive
@@ -85,9 +85,9 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
-          $package = "wonderdraft-editor-$version-windows-x86_64"
+          $package = "miracledraft-map-helper-$version-windows-x86_64"
           New-Item -ItemType Directory -Force "dist/$package" | Out-Null
-          Copy-Item target/release/wonderdraft-editor.exe "dist/$package/"
+          Copy-Item target/release/miracledraft-map-helper.exe "dist/$package/"
           Copy-Item README.md, LICENSE, AI_DISCLOSURE.md, wonderdraft_font_names.txt "dist/$package/"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
 
@@ -96,9 +96,9 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          package="wonderdraft-editor-${version}-macos-aarch64"
+          package="miracledraft-map-helper-${version}-macos-aarch64"
           mkdir -p "dist/$package"
-          install -m 755 target/release/wonderdraft-editor "dist/$package/wonderdraft-editor"
+          install -m 755 target/release/miracledraft-map-helper "dist/$package/miracledraft-map-helper"
           install -m 644 README.md LICENSE AI_DISCLOSURE.md wonderdraft_font_names.txt "dist/$package/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
@@ -124,7 +124,7 @@ jobs:
       - name: Download release archives
         uses: actions/download-artifact@v8
         with:
-          pattern: wonderdraft-editor-*
+          pattern: miracledraft-map-helper-*
           path: dist
           merge-multiple: true
 

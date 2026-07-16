@@ -1,10 +1,10 @@
-# Wonderdraft Map Editor
+# Miracledraft Map Helper
 
-[![CI](https://github.com/Glumbosch/wonderdraft_map_extractor/actions/workflows/ci.yml/badge.svg)](https://github.com/Glumbosch/wonderdraft_map_extractor/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/Glumbosch/wonderdraft_map_extractor)](https://github.com/Glumbosch/wonderdraft_map_extractor/releases/latest)
+[![CI](https://github.com/Glumbosch/miracledraft_map_helper/actions/workflows/ci.yml/badge.svg)](https://github.com/Glumbosch/miracledraft_map_helper/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Glumbosch/miracledraft_map_helper)](https://github.com/Glumbosch/miracledraft_map_helper/releases/latest)
 [![License: Unlicense](https://img.shields.io/badge/license-public%20domain-blue.svg)](LICENSE)
 
-A native desktop tool for inspecting and converting Wonderdraft
+A native desktop tool for extracting and manipulating Wonderdraft
 `.wonderdraft_map` files. Its main workflow exports map layers to SVG, lets you
 edit roads, paths, labels, symbols, and territories in an SVG editor, then
 imports those changes into a new Wonderdraft map.
@@ -24,8 +24,8 @@ Wonderdraft is required to create and use the maps handled by this tool. Please
 [buy Wonderdraft](https://www.wonderdraft.net/) to support its developers.
 
 Full usage documentation is available in the
-[project wiki](https://github.com/Glumbosch/wonderdraft_map_extractor/wiki),
-including a [function and keyboard-shortcut reference](https://github.com/Glumbosch/wonderdraft_map_extractor/wiki/Functions-and-Keyboard-Shortcuts).
+[project wiki](https://github.com/Glumbosch/miracledraft_map_helper/wiki),
+including a [function and keyboard-shortcut reference](https://github.com/Glumbosch/miracledraft_map_helper/wiki/Functions-and-Keyboard-Shortcuts).
 
 ## Screenshots
 
@@ -34,7 +34,7 @@ including a [function and keyboard-shortcut reference](https://github.com/Glumbo
 Open a map, inspect or edit its Godot text, choose SVG layers, and work with
 embedded images from one window.
 
-![Wonderdraft Map Editor main window](screenshots/mainwindow.jpg)
+![Miracledraft Map Helper main window](screenshots/mainwindow.jpg)
 
 ### SVG round trip
 
@@ -71,15 +71,15 @@ terms and are not relicensed by this project.
 ## Download
 
 Prebuilt archives for Linux (x86_64), Windows (x86_64), and macOS (Apple
-Silicon) are attached to each [GitHub release](https://github.com/Glumbosch/wonderdraft_map_extractor/releases/latest).
+Silicon) are attached to each [GitHub release](https://github.com/Glumbosch/miracledraft_map_helper/releases/latest).
 Release archives are produced by GitHub Actions and include SHA-256 checksums.
 They also include the default editable `wonderdraft_font_names.txt` mapping used
 for faithful SVG label font names.
 
-On Linux, extract the archive and run `./wonderdraft-editor`. To add it to your
+On Linux, extract the archive and run `./miracledraft-map-helper`. To add it to your
 desktop application menu, run `./install-linux-launcher.sh` from the extracted
-directory. On Windows, extract the ZIP and run `wonderdraft-editor.exe`. On
-macOS, extract the archive and run `wonderdraft-editor` from Terminal; because
+directory. On Windows, extract the ZIP and run `miracledraft-map-helper.exe`. On
+macOS, extract the archive and run `miracledraft-map-helper` from Terminal; because
 the binary is currently unsigned, macOS may require explicit approval in
 Privacy & Security on first launch.
 
@@ -101,17 +101,17 @@ cargo run --release
 On Linux you can also use the launcher, which selects the X11 backend:
 
 ```bash
-./start_wonderdraft_editor_rust.sh
+./start_miracledraft_map_helper.sh
 ```
 
 Windows:
 
 ```bat
-start_wonderdraft_editor_rust.bat
+start_miracledraft_map_helper.bat
 ```
 
-The compiled executable is `target/release/wonderdraft-editor` (or
-`wonderdraft-editor.exe` on Windows).
+The compiled executable is `target/release/miracledraft-map-helper` (or
+`miracledraft-map-helper.exe` on Windows).
 
 The Settings window includes an **About** section showing the exact program
 version compiled into the running executable. The main window can be resized
@@ -142,12 +142,12 @@ with:
 ```
 
 The installer copies the executable into the user application-data directory,
-uses `wonderdraft_map_extractor.png` as the fallback launcher icon, installs
-`wonderdraft_map_extractor.svg` as the scalable icon, and creates
-`~/.local/share/applications/wonderdraft-map-extractor.desktop` (or the
+uses `miracledraft_map_helper.png` as the fallback launcher icon, installs
+`miracledraft_map_helper.svg` as the scalable icon, and creates
+`~/.local/share/applications/miracledraft-map-helper.desktop` (or the
 equivalent location below `XDG_DATA_HOME`). No administrator access is needed.
 
-The repository also contains `wonderdraft-map-extractor.desktop`, which is the
+The repository also contains `miracledraft-map-helper.desktop`, which is the
 portable template used by the installer.
 
 ## First-start setup
@@ -213,7 +213,7 @@ before starting the editor:
 
 ```bash
 WONDERDRAFT_PCK=/another/location/Wonderdraft.pck \
-  ./start_wonderdraft_editor_rust.sh
+  ./start_miracledraft_map_helper.sh
 ```
 
 Extracted files are written to `wonderdraft_files` in the application's working
@@ -291,7 +291,7 @@ Wonderdraft widths 10 and 13 become approximately 4.2 and 5.46 SVG pixels.
 
 ## Settings and generated data
 
-`wonderdraft_gui.config` stores the Wonderdraft, asset, cache, and completed
+`miracledraft_map_helper.config` stores the Wonderdraft, asset, cache, and completed
 setup settings as JSON. It also stores the last four maps opened by this editor.
 **Open recent** refreshes Wonderdraft's `config.ini` whenever the menu opens and
 deduplicates its entries against the editor's own recent list. The editor first
@@ -318,7 +318,7 @@ the extracted `wonderdraft_files/sprites` folder.
 
 **The file chooser or drag and drop does not work on Linux**
 
-Start the app with `start_wonderdraft_editor_rust.sh`. The build and launcher
+Start the app with `start_miracledraft_map_helper.sh`. The build and launcher
 intentionally use X11 for compatible native file dialogs and drag and drop.
 
 ## Development and validation
@@ -339,7 +339,7 @@ See [SVG_INTERCHANGE_NOTES.md](SVG_INTERCHANGE_NOTES.md) for format details and
 ## Making a release
 
 Update the version in `Cargo.toml`, commit the corresponding `Cargo.lock`
-change, and push a matching semantic-version tag such as `v0.4.1`. The release
+change, and push a matching semantic-version tag such as `v0.4.2`. The release
 workflow validates the version, builds all supported packages, generates
 checksums and provenance attestations, and publishes a GitHub release with
 automatically generated notes. See [RELEASING.md](RELEASING.md) for the exact

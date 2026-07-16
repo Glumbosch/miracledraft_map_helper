@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Miracledraft Map Helper
+GenericName=Wonderdraft map helper
+Comment=Open, inspect, and convert Wonderdraft map files
+Exec=env GDK_BACKEND=x11 miracledraft-map-helper
+Path=
+Icon=miracledraft-map-helper
+Terminal=false
+Categories=Graphics;
+StartupNotify=true
+StartupWMClass=miracledraft-map-helper

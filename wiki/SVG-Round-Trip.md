@@ -22,15 +22,15 @@ For the exact group and attribute rules used by the importer, see
 
 Original map and decoded data:
 
-![Original Wonderdraft map beside the editor](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/load_pre_edit.jpg)
+![Original Wonderdraft map beside the helper](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/load_pre_edit.jpg)
 
 Editing a road/path in Inkscape:
 
-![Editing an exported road in Inkscape](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/in_inkscape.jpg)
+![Editing an exported road in Inkscape](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/in_inkscape.jpg)
 
 Saved map after importing the SVG:
 
-![Edited SVG content imported back into Wonderdraft](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/after_edit.jpg)
+![Edited SVG content imported back into Wonderdraft](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/after_edit.jpg)
 
 ## Round-trip behavior
 

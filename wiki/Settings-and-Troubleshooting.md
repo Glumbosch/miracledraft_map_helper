@@ -2,7 +2,7 @@
 
 ## Stored settings
 
-`wonderdraft_gui.config` stores setup completion, Wonderdraft and asset folders,
+`miracledraft_map_helper.config` stores setup completion, Wonderdraft and asset folders,
 cache options, and the last four maps opened by this editor. A config file in
 the working directory takes priority; otherwise the editor uses one beside the
 executable.
@@ -45,7 +45,7 @@ for pack sprites. Export again and check the missing-sprite count.
 
 ### File chooser or drag and drop fails on Linux
 
-Start the app with `start_wonderdraft_editor_rust.sh`. The Linux launcher uses
+Start the app with `start_miracledraft_map_helper.sh`. The Linux launcher uses
 X11 for native file-dialog and drag-and-drop compatibility.
 
 ### A saved map does not open correctly

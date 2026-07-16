@@ -1,12 +1,12 @@
 [package]
-name = "wonderdraft-editor"
-version = "0.4.1"
+name = "miracledraft-map-helper"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.87"
-description = "Native Rust editor for Wonderdraft map files with SVG interchange"
+description = "Miracledraft Map Helper for Wonderdraft map files with SVG interchange"
 license = "Unlicense"
-repository = "https://github.com/Glumbosch/wonderdraft_map_extractor"
-homepage = "https://github.com/Glumbosch/wonderdraft_map_extractor"
+repository = "https://github.com/Glumbosch/miracledraft_map_helper"
+homepage = "https://github.com/Glumbosch/miracledraft_map_helper"
 readme = "README.md"
 keywords = ["wonderdraft", "map-editor", "svg"]
 categories = ["graphics", "parser-implementations"]

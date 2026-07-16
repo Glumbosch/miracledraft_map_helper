@@ -14,7 +14,7 @@ cargo test --locked
 Linux builds use X11. The launcher sets the expected toolkit backend:
 
 ```bash
-./start_wonderdraft_editor_rust.sh
+./start_miracledraft_map_helper.sh
 ```
 
 ## Pull requests

@@ -1,4 +1,4 @@
-## Wonderdraft Map Editor
+## Miracledraft Map Helper
 
 - [Home](Home)
 - [Getting Started](Getting-Started)
@@ -9,4 +9,4 @@
 
 ---
 
-[Source repository](https://github.com/Glumbosch/wonderdraft_map_extractor) · [Latest release](https://github.com/Glumbosch/wonderdraft_map_extractor/releases/latest)
+[Source repository](https://github.com/Glumbosch/miracledraft_map_helper) · [Latest release](https://github.com/Glumbosch/miracledraft_map_helper/releases/latest)

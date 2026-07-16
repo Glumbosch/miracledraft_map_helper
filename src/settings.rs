@@ -54,7 +54,7 @@ fn enabled() -> bool {
 pub fn config_path() -> PathBuf {
     let working = env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join("wonderdraft_gui.config");
+        .join("miracledraft_map_helper.config");
     if working.is_file() {
         return working;
     }
@@ -62,26 +62,26 @@ pub fn config_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(Path::to_owned))
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("wonderdraft_gui.config")
+        .join("miracledraft_map_helper.config")
 }
 
 pub fn default_cache() -> PathBuf {
-    if let Ok(p) = env::var("WONDERDRAFT_GUI_CACHE") {
+    if let Ok(p) = env::var("MIRACLEDRAFT_MAP_HELPER_CACHE") {
         return PathBuf::from(p);
     }
     if cfg!(target_os = "windows") {
         PathBuf::from(env::var_os("LOCALAPPDATA").unwrap_or_else(|| ".".into()))
-            .join("WonderdraftMapEditor/cache")
+            .join("MiracledraftMapHelper/cache")
     } else if cfg!(target_os = "macos") {
         PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
-            .join("Library/Caches/WonderdraftMapEditor")
+            .join("Library/Caches/MiracledraftMapHelper")
     } else {
         PathBuf::from(env::var_os("XDG_CACHE_HOME").unwrap_or_else(|| {
             env::var_os("HOME")
                 .map(|p| PathBuf::from(p).join(".cache").into_os_string())
                 .unwrap_or_else(|| "/tmp".into())
         }))
-        .join("wonderdraft_gui")
+        .join("miracledraft_map_helper")
     }
 }
 
@@ -241,7 +241,7 @@ pub fn clear_cache(path: &Path, preserve: Option<&Path>) -> std::io::Result<()> 
         let entry_path = entry.path();
         let app_cache_entry = entry.file_name().to_str().is_some_and(|name| {
             name.starts_with("wonderdraft_rust_")
-                || name.starts_with("wonderdraft_gui_")
+                || name.starts_with("miracledraft_map_helper_")
                 || name.starts_with("wonderdraft_verify_")
         });
         if !app_cache_entry {

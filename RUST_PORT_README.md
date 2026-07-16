@@ -1,4 +1,4 @@
-# Wonderdraft Map Editor 
+# Miracledraft Map Helper
 
 The main installation, setup, workflow, and troubleshooting guide is now
 [`README.md`](README.md). This document records additional implementation notes
@@ -13,8 +13,8 @@ are written back to Godot's GCPF/FastLZ container.
 cargo run --release
 ```
 
-The release executable is `target/release/wonderdraft-editor` (or
-`wonderdraft-editor.exe` on Windows).
+The release executable is `target/release/miracledraft-map-helper` (or
+`miracledraft-map-helper.exe` on Windows).
 
 On Linux the application is compiled with Eframe/Winit's X11 backend only.
 Wayland window support is deliberately disabled because native file drag and
@@ -40,7 +40,7 @@ helper UI.
   and optional `custom_assets_directory`.
 - Show the cache size, clear stale cache data on demand, and clear the cache on
   exit by default.
-- Persist asset and disk-cache settings in `wonderdraft_gui.config` beside the
+- Persist asset and disk-cache settings in `miracledraft_map_helper.config` beside the
   executable.
 
 ## Settings and Wonderdraft integration

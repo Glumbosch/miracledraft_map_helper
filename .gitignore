@@ -1,5 +1,6 @@
 /target/
 /wonderdraft_files/
+/miracledraft_map_helper.config
 /wonderdraft_gui.config
 __pycache__/
 *.py[cod]

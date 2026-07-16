@@ -1,6 +1,6 @@
 # Editing SVG for Import
 
-Wonderdraft Map Editor imports elements identified either by `wd:kind` or by
+Miracledraft Map Helper imports elements identified either by `wd:kind` or by
 their element type inside a recognized Wonderdraft Inkscape layer. Tagged
 elements can remain anywhere in the document; layer recognition is primarily
 useful for newly created elements that do not have Wonderdraft metadata yet.
@@ -275,7 +275,7 @@ for that operation.
 
 ## Safe Inkscape workflow
 
-1. Export the required layers from Wonderdraft Map Editor.
+1. Export the required layers from Miracledraft Map Helper.
 2. Open the SVG in Inkscape.
 3. Select and edit the existing tagged element. Do not use **Flatten**,
    **Unlink Clone**, or an optimizer that removes namespaced attributes.

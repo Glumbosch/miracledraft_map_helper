@@ -1,12 +1,7 @@
 #![allow(clippy::collapsible_if)]
 
 use eframe::egui;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, TryRecvError},
-};
-use wonderdraft_editor::{
+use miracledraft_map_helper::{
     Error, Result, Value,
     assets::Resolver,
     fonts, gcpf, godot_text,
@@ -17,8 +12,13 @@ use wonderdraft_editor::{
     value::image_info,
     variant,
 };
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, TryRecvError},
+};
 
-const APP_NAME: &str = "Wonderdraft Map Editor";
+const APP_NAME: &str = "Miracledraft Map Helper";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct App {
@@ -646,7 +646,7 @@ impl App {
         let mut open = self.setup_wizard_open;
         let mut finish = false;
         let mut skip_fonts = false;
-        egui::Window::new("Wonderdraft Map Editor setup")
+        egui::Window::new("Miracledraft Map Helper setup")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -1425,7 +1425,10 @@ impl eframe::App for App {
                             info.height,
                             info.format,
                             info.pixels.len(),
-                            if matches!(info.pixels, wonderdraft_editor::ByteSource::File { .. }) {
+                            if matches!(
+                                info.pixels,
+                                miracledraft_map_helper::ByteSource::File { .. }
+                            ) {
                                 "disk-backed"
                             } else {
                                 "in memory"

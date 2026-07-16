@@ -3,13 +3,13 @@
 ## Install and launch
 
 Download the archive for Linux, Windows, or Apple Silicon macOS from the
-[latest release](https://github.com/Glumbosch/wonderdraft_map_extractor/releases/latest).
+[latest release](https://github.com/Glumbosch/miracledraft_map_helper/releases/latest).
 
-- Linux: extract the archive and run `./wonderdraft-editor`. Running
+- Linux: extract the archive and run `./miracledraft-map-helper`. Running
   `./install-linux-launcher.sh` adds an application-menu entry for the current
   user.
-- Windows: extract the ZIP and run `wonderdraft-editor.exe`.
-- macOS: extract the archive and run `wonderdraft-editor` from Terminal. The
+- Windows: extract the ZIP and run `miracledraft-map-helper.exe`.
+- macOS: extract the archive and run `miracledraft-map-helper` from Terminal. The
   unsigned binary may need approval in Privacy & Security on first launch.
 
 ## First-start wizard

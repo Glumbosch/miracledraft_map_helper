@@ -1,4 +1,4 @@
-# Wonderdraft Map Editor 
+# Miracledraft Map Helper
 
 Experimental desktop editor for Wonderdraft `.wonderdraft_map` files. 
 
@@ -45,7 +45,7 @@ recognizes both `Wonderdraft.pck` and `wonderdraft.pck`. On Linux it checks
 `/opt/Wonderdraft/Wonderdraft.pck`. Settings are saved as JSON in:
 
 ```text
-wonderdraft_gui.config
+miracledraft_map_helper.config
 ```
 
 The application has its own PCK extractor. Use **Choose Wonderdraft.pck…** in

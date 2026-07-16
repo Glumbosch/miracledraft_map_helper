@@ -15,11 +15,11 @@
 4. Commit the release version, then create and push a matching tag:
 
    ```bash
-   git tag -a v0.4.1 -m "Release v0.4.1"
-   git push origin main v0.4.1
+   git tag -a v0.4.2 -m "Release v0.4.2"
+   git push origin main v0.4.2
    ```
 
-5. Watch the **Release** workflow. It validates that `v0.4.1` matches the Cargo
+5. Watch the **Release** workflow. It validates that `v0.4.2` matches the Cargo
    package version, builds each platform archive, publishes checksums and build
    provenance, and creates the GitHub release.
 6. Download an archive from the published release and perform a smoke test.

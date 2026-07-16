@@ -1,6 +1,6 @@
-# Wonderdraft Map Editor Wiki
+# Miracledraft Map Helper Wiki
 
-Wonderdraft Map Editor is an unofficial desktop tool for inspecting and
+Miracledraft Map Helper is an unofficial desktop tool for inspecting and
 converting `.wonderdraft_map` files. Its core workflow is to export editable map
 layers as SVG, edit them in a vector editor, import the changes, and save a new
 Wonderdraft map.
@@ -33,16 +33,16 @@ maps.
 
 ### Main editor
 
-![Wonderdraft Map Editor main window](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/mainwindow.jpg)
+![Miracledraft Map Helper main window](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/mainwindow.jpg)
 
 ### Before editing
 
-![Original Wonderdraft map beside the editor](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/load_pre_edit.jpg)
+![Original Wonderdraft map beside the helper](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/load_pre_edit.jpg)
 
 ### Editing the SVG in Inkscape
 
-![Editing an exported road in Inkscape](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/in_inkscape.jpg)
+![Editing an exported road in Inkscape](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/in_inkscape.jpg)
 
 ### After importing the edited SVG
 
-![Edited SVG content imported back into Wonderdraft](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/after_edit.jpg)
+![Edited SVG content imported back into Wonderdraft](https://raw.githubusercontent.com/Glumbosch/miracledraft_map_helper/main/screenshots/after_edit.jpg)

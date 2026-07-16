@@ -531,7 +531,7 @@ pub fn export(
     let height = n(root.get("map_height"), 512.);
     let mut summary = Summary::default();
     let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" xmlns:wd=\"{WD}\" width=\"{width}px\" height=\"{height}px\" viewBox=\"0 0 {width} {height}\" wd:format-version=\"2\" wd:map-width=\"{width}\" wd:map-height=\"{height}\">\n  <metadata>Wonderdraft Map Editor SVG interchange file</metadata>\n"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" xmlns:wd=\"{WD}\" width=\"{width}px\" height=\"{height}px\" viewBox=\"0 0 {width} {height}\" wd:format-version=\"2\" wd:map-width=\"{width}\" wd:map-height=\"{height}\">\n  <metadata>Miracledraft Map Helper SVG interchange file</metadata>\n"
     );
     if options.background {
         xml.push_str(&layer_open("wonderdraft-mask-background"));
