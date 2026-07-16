@@ -38,6 +38,24 @@ start_wonderdraft_editor_rust.bat
 The compiled executable is `target/release/wonderdraft-editor` (or
 `wonderdraft-editor.exe` on Windows).
 
+### Linux application launcher
+
+After building the release executable, install an application-menu launcher
+with:
+
+```bash
+./install-linux-launcher.sh
+```
+
+The installer copies the executable into the user application-data directory,
+uses `wonderdraft_map_extractor.png` as the fallback launcher icon, installs
+`wonderdraft_map_extractor.svg` as the scalable icon, and creates
+`~/.local/share/applications/wonderdraft-map-extractor.desktop` (or the
+equivalent location below `XDG_DATA_HOME`). No administrator access is needed.
+
+The repository also contains `wonderdraft-map-extractor.desktop`, which launches
+the release executable directly from this checkout.
+
 ## First-start setup
 
 The setup wizard opens the first time the editor runs. It can be opened again
@@ -88,6 +106,11 @@ directory. Wonderdraft image resources are given a `.png` extension, and
 - Import edited SVG elements into the open map, then save the result as a new
   `.wonderdraft_map` file.
 
+Built-in `res://sprites/...` textures resolve below the configured core
+`sprites` folder. Pack textures such as `res://packs/<pack>/sprites/.../5`
+resolve below the sibling `wonderdraft_files/packs` folder and automatically
+pick up extracted image extensions such as `.png`.
+
 ## SVG round trip
 
 For the most reliable round trip, keep the `wd:*` metadata attributes on SVG
@@ -97,7 +120,10 @@ best-effort basis because Wonderdraft record formats can differ by version.
 
 The layer checkboxes control whether the background mask, roads/paths, symbols,
 and labels are included. **Embed mask in SVG** stores the mask as a data URI;
-otherwise the SVG refers to an external PNG.
+otherwise the SVG refers to an external PNG. **Embed symbols in SVG** writes one
+base64 PNG definition for each distinct source symbol and places repeated
+instances as SVG `<use>` clones, making the SVG portable without duplicating
+the same image data.
 
 ## Settings and generated data
 

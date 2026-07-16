@@ -8,6 +8,7 @@ const EXTS: &[&str] = &["png", "webp", "jpg", "jpeg", "svg"];
 pub struct Resolver {
     pub custom: Option<PathBuf>,
     pub default: Option<PathBuf>,
+    pub packs: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -23,9 +24,19 @@ pub struct AssetInfo {
 }
 impl Resolver {
     pub fn new(s: &Settings) -> Self {
+        let default = nonempty(&s.default_asset_folder);
+        let packs = default
+            .as_deref()
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("sprites"))
+            })
+            .and_then(Path::parent)
+            .map(|root| root.join("packs"));
         Self {
             custom: nonempty(&s.custom_asset_folder),
-            default: nonempty(&s.default_asset_folder),
+            default,
+            packs,
         }
     }
     pub fn resolve(&self, texture: &str) -> Option<PathBuf> {
@@ -37,6 +48,11 @@ impl Resolver {
                 self.default
                     .as_ref()
                     .zip(texture.strip_prefix("res://sprites/"))
+            })
+            .or_else(|| {
+                self.packs
+                    .as_ref()
+                    .zip(texture.strip_prefix("res://packs/"))
             })?;
         candidate(root, rel)
     }
@@ -45,6 +61,7 @@ impl Resolver {
         for (root, prefix) in [
             (&self.custom, "user://assets/"),
             (&self.default, "res://sprites/"),
+            (&self.packs, "res://packs/"),
         ] {
             if let Some(root) = root
                 && let Ok(rel) = p.strip_prefix(root)
@@ -102,7 +119,11 @@ impl Resolver {
     }
 
     fn metadata_for(&self, path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
-        let roots = [self.custom.as_deref(), self.default.as_deref()];
+        let roots = [
+            self.custom.as_deref(),
+            self.default.as_deref(),
+            self.packs.as_deref(),
+        ];
         let stem = path.file_stem()?.to_string_lossy().to_lowercase();
         let parent_name = path.parent()?.file_name()?.to_string_lossy().to_lowercase();
         let mut current = path.parent()?;
@@ -203,4 +224,41 @@ fn parse_length(value: &str) -> Option<f64> {
         .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%')
         .parse()
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        env,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn resolves_extracted_pack_textures_and_recreates_their_uri() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let extracted = env::temp_dir().join(format!("wonderdraft-pack-resolver-{stamp}"));
+        let sprites = extracted.join("sprites");
+        let pack_sprite =
+            extracted.join("packs/Tang Dynasty by Chan/sprites/symbols/tang_dynasty_normal/5.png");
+        fs::create_dir_all(&sprites).unwrap();
+        fs::create_dir_all(pack_sprite.parent().unwrap()).unwrap();
+        fs::write(&pack_sprite, b"test image placeholder").unwrap();
+
+        let resolver = Resolver::new(&Settings {
+            default_asset_folder: sprites.to_string_lossy().into_owned(),
+            ..Settings::default()
+        });
+        let texture = "res://packs/Tang Dynasty by Chan/sprites/symbols/tang_dynasty_normal/5";
+
+        assert_eq!(resolver.resolve(texture), Some(pack_sprite.clone()));
+        assert_eq!(
+            resolver.texture_for_path(&pack_sprite),
+            Some(texture.to_owned())
+        );
+        let _ = fs::remove_dir_all(extracted);
+    }
 }

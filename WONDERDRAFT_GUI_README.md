@@ -58,7 +58,8 @@ The SVG contains:
 
 - The embedded Wonderdraft `mask` PNG as a full-size background image.
 - Wonderdraft labels as real SVG `<text>` elements.
-- Symbols as SVG `<image>` elements pointing to their source sprite files.
+- Symbols as SVG images pointing to their source sprite files, or as embedded
+  base64 PNG definitions with lightweight `<use>` clones.
 - Existing paths as editable SVG polylines when their point array can be identified.
 - `wd:*` metadata attributes containing the original Wonderdraft records for reliable round trips.
 

@@ -31,6 +31,7 @@ struct App {
     compressed: bool,
     verify: bool,
     embed_bg: bool,
+    embed_symbols: bool,
     export_background: bool,
     export_paths: bool,
     export_symbols: bool,
@@ -110,6 +111,7 @@ impl Default for App {
             compressed: true,
             verify: true,
             embed_bg: false,
+            embed_symbols: false,
             export_background: true,
             export_paths: true,
             export_symbols: true,
@@ -750,6 +752,7 @@ impl App {
             symbols: self.export_symbols,
             labels: self.export_labels,
             embed_background: self.embed_bg,
+            embed_symbols: self.embed_symbols,
         };
         let s = svg::export(
             &root,
@@ -938,6 +941,7 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.compressed, "Compress saved map");
                 ui.checkbox(&mut self.verify, "Verify save");
                 ui.checkbox(&mut self.embed_bg, "Embed mask in SVG");
+                ui.checkbox(&mut self.embed_symbols, "Embed symbols in SVG");
             });
             if busy {
                 ui.horizontal(|ui| {

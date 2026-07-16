@@ -5,7 +5,12 @@ use crate::{
     images::{self, Images},
 };
 use quick_xml::{Reader, events::Event};
-use std::{fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 
 const WD: &str = "urn:wonderdraft-map-editor";
 #[derive(Clone, Debug, Default)]
@@ -25,6 +30,7 @@ pub struct ExportOptions {
     pub symbols: bool,
     pub labels: bool,
     pub embed_background: bool,
+    pub embed_symbols: bool,
 }
 
 impl Default for ExportOptions {
@@ -35,6 +41,7 @@ impl Default for ExportOptions {
             symbols: true,
             labels: true,
             embed_background: false,
+            embed_symbols: false,
         }
     }
 }
@@ -223,6 +230,43 @@ fn b64decode(s: &str) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+fn symbol_path_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_owned())
+}
+
+fn png_data_uri(path: &Path) -> Result<String> {
+    let png = if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        fs::read(path).map_err(|error| {
+            Error::format(format!(
+                "could not read symbol image {}: {error}",
+                path.display()
+            ))
+        })?
+    } else {
+        let image = image::open(path).map_err(|error| {
+            Error::format(format!(
+                "could not decode symbol image {} for PNG embedding: {error}",
+                path.display()
+            ))
+        })?;
+        let mut png = Cursor::new(Vec::new());
+        image
+            .write_to(&mut png, image::ImageFormat::Png)
+            .map_err(|error| {
+                Error::format(format!(
+                    "could not encode symbol image {} as PNG: {error}",
+                    path.display()
+                ))
+            })?;
+        png.into_inner()
+    };
+    Ok(format!("data:image/png;base64,{}", b64(&png, false)))
+}
 fn record(v: &Value) -> String {
     b64(godot_text::format(v).as_bytes(), true)
 }
@@ -325,6 +369,39 @@ pub fn export(
         xml.push_str("  </g>\n");
     }
     if options.symbols {
+        let mut embedded_symbols = HashMap::new();
+        if options.embed_symbols
+            && let Some(symbols) = root.get("symbols").and_then(Value::as_array)
+        {
+            let mut definitions = String::new();
+            for record in symbols {
+                let texture = record.get("texture").and_then(Value::as_str).unwrap_or("");
+                let Some(asset) = resolver.asset_info(texture) else {
+                    continue;
+                };
+                let key = symbol_path_key(&asset.path);
+                if embedded_symbols.contains_key(&key) {
+                    continue;
+                }
+                let id = format!("wonderdraft-symbol-definition-{}", embedded_symbols.len());
+                let href = png_data_uri(&asset.path)?;
+                definitions.push_str(&format!(
+                    "    <symbol id=\"{id}\" viewBox=\"0 0 {} {}\" preserveAspectRatio=\"none\" wd:texture=\"{}\">\n      <image x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" xlink:href=\"{}\"/>\n    </symbol>\n",
+                    asset.width,
+                    asset.height,
+                    esc(texture),
+                    asset.width,
+                    asset.height,
+                    esc(&href)
+                ));
+                embedded_symbols.insert(key, id);
+            }
+            if !definitions.is_empty() {
+                xml.push_str("  <defs id=\"wonderdraft-symbol-definitions\">\n");
+                xml.push_str(&definitions);
+                xml.push_str("  </defs>\n");
+            }
+        }
         xml.push_str("  <g id=\"wonderdraft-symbols\">\n");
         if let Some(a) = root.get("symbols").and_then(Value::as_array) {
             for (i, r) in a.iter().enumerate() {
@@ -342,9 +419,6 @@ pub fn export(
                     let visual_center = (x + offset.0 * scale.0, y + offset.1 * scale.1);
                     let image_x = visual_center.0 - w / 2.0;
                     let image_y = visual_center.1 - h / 2.0;
-                    let href = url::Url::from_file_path(&asset.path)
-                        .map(|u| u.to_string())
-                        .unwrap_or_else(|_| asset.path.to_string_lossy().into_owned());
                     let mut transform = IDENTITY;
                     if mirrored {
                         transform = mat_mul(transform, mirror_about_x(visual_center.0));
@@ -357,7 +431,29 @@ pub fn export(
                     } else {
                         String::new()
                     };
-                    xml.push_str(&format!("    <image id=\"wonderdraft-symbol-{i}\" x=\"{image_x}\" y=\"{image_y}\" width=\"{w}\" height=\"{h}\" xlink:href=\"{}\" opacity=\"{alpha}\" wd:kind=\"symbol\" wd:texture=\"{}\" wd:record=\"{}\" wd:source-width=\"{}\" wd:source-height=\"{}\" wd:base-radius=\"{}\" wd:offset-x=\"{}\" wd:offset-y=\"{}\" wd:export-width=\"{w}\" wd:export-height=\"{h}\"{transform_attr}/>\n",esc(&href),esc(texture),record(r),asset.width,asset.height,asset.base_radius,offset.0,offset.1));
+                    let common = format!(
+                        "id=\"wonderdraft-symbol-{i}\" x=\"{image_x}\" y=\"{image_y}\" width=\"{w}\" height=\"{h}\" opacity=\"{alpha}\" wd:kind=\"symbol\" wd:texture=\"{}\" wd:record=\"{}\" wd:source-width=\"{}\" wd:source-height=\"{}\" wd:base-radius=\"{}\" wd:offset-x=\"{}\" wd:offset-y=\"{}\" wd:export-width=\"{w}\" wd:export-height=\"{h}\"{transform_attr}",
+                        esc(texture),
+                        record(r),
+                        asset.width,
+                        asset.height,
+                        asset.base_radius,
+                        offset.0,
+                        offset.1
+                    );
+                    if let Some(definition) = embedded_symbols.get(&symbol_path_key(&asset.path)) {
+                        xml.push_str(&format!(
+                            "    <use {common} href=\"#{definition}\" xlink:href=\"#{definition}\"/>\n"
+                        ));
+                    } else {
+                        let href = url::Url::from_file_path(&asset.path)
+                            .map(|url| url.to_string())
+                            .unwrap_or_else(|_| asset.path.to_string_lossy().into_owned());
+                        xml.push_str(&format!(
+                            "    <image {common} xlink:href=\"{}\"/>\n",
+                            esc(&href)
+                        ));
+                    }
                 } else {
                     summary.missing_symbols += 1;
                     let offset = vec2(r.get("offset"), (0.0, 0.0));
@@ -783,6 +879,7 @@ mod tests {
                 symbols: true,
                 labels: false,
                 embed_background: false,
+                embed_symbols: false,
             },
         )
         .unwrap();
@@ -810,6 +907,80 @@ mod tests {
             Some(Value::Bool(true))
         ));
         assert_eq!(imported_summary.symbols, 1);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn embedded_symbols_use_one_png_definition_and_cloned_instances() {
+        let base = std::env::temp_dir().join(format!(
+            "wonderdraft-svg-embedded-symbols-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        image::RgbaImage::new(10, 20)
+            .save(base.join("shared.png"))
+            .unwrap();
+        let make_symbol = |x| {
+            dict(vec![
+                ("texture", Value::String("user://assets/shared".into())),
+                (
+                    "position",
+                    Value::Vector {
+                        kind: "Vector2".into(),
+                        values: vec![x, 50.],
+                    },
+                ),
+            ])
+        };
+        let root = dict(vec![
+            ("map_width", Value::Int(512)),
+            ("map_height", Value::Int(512)),
+            (
+                "symbols",
+                Value::Array(vec![make_symbol(25.), make_symbol(75.)]),
+            ),
+        ]);
+        let resolver = Resolver::new(&Settings {
+            custom_asset_folder: base.to_string_lossy().into_owned(),
+            ..Settings::default()
+        });
+        let destination = base.join("embedded.svg");
+
+        let summary = export(
+            &root,
+            &Vec::new(),
+            &destination,
+            &resolver,
+            ExportOptions {
+                background: false,
+                paths: false,
+                symbols: true,
+                labels: false,
+                embed_background: false,
+                embed_symbols: true,
+            },
+        )
+        .unwrap();
+        let xml = fs::read_to_string(&destination).unwrap();
+        assert_eq!(xml.matches("data:image/png;base64,").count(), 1);
+        assert_eq!(
+            xml.matches("<symbol id=\"wonderdraft-symbol-definition-")
+                .count(),
+            1
+        );
+        assert_eq!(xml.matches("<use ").count(), 2);
+        assert!(!xml.contains("file://"));
+        assert_eq!(summary.symbols, 2);
+
+        let mut imported = root.clone();
+        let imported_summary = import(&mut imported, &destination, &resolver).unwrap();
+        let imported_symbols = imported.get("symbols").unwrap().as_array().unwrap();
+        assert_eq!(imported_symbols.len(), 2);
+        assert!(imported_symbols.iter().all(|symbol| {
+            symbol.get("texture").and_then(Value::as_str) == Some("user://assets/shared")
+        }));
+        assert_eq!(imported_summary.symbols, 2);
         let _ = fs::remove_dir_all(base);
     }
 }
