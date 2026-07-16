@@ -4,9 +4,9 @@ Version=1.0
 Name=Wonderdraft Map Extractor
 GenericName=Wonderdraft Map Editor
 Comment=Open, inspect, and convert Wonderdraft map files
-Exec=env GDK_BACKEND=x11 "/home/wolf/code/wonderdraft_manipulator/wonderdraft_map_extractor/target/release/wonderdraft-editor"
-Path=/home/wolf/code/wonderdraft_manipulator/wonderdraft_map_extractor
-Icon=/home/wolf/code/wonderdraft_manipulator/wonderdraft_map_extractor/wonderdraft_map_extractor.png
+Exec=env GDK_BACKEND=x11 wonderdraft-editor
+Path=
+Icon=wonderdraft-map-extractor
 Terminal=false
 Categories=Graphics;
 StartupNotify=true

@@ -1,0 +1,17 @@
+# Wonderdraft font label<TAB>installed font family<TAB>SVG style<TAB>SVG weight
+# This file is editable. Existing rows are never replaced during font discovery.
+Aladin	Aladin	normal	normal
+Barlow Condensed	Barlow Condensed	normal	normal
+Bilbo	Bilbo	normal	normal
+Cinzel Decorative	Cinzel Decorative	normal	normal
+East Sea Dokdo	East Sea Dokdo	normal	normal
+Fredericka the Great	Fredericka the Great	normal	normal
+Gentium Book Basic	Gentium Book Basic	normal	bold
+IM Fell DW Pica	IM FELL DW Pica	normal	normal
+IM Fell English Italic	IM FELL English	italic	normal
+Katibeh	Katibeh	normal	normal
+Lancelot	Lancelot	normal	normal
+Marko One	Marko One	normal	normal
+Merriweather	Merriweather	normal	normal
+Metamorphous	Metamorphous	normal	normal
+Uncial Antiqua	Uncial Antiqua	normal	normal

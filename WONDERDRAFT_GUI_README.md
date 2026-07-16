@@ -59,6 +59,9 @@ on Windows, Linux, or macOS. Existing identical fonts are skipped safely, and a
 different existing font with the same filename is never overwritten. No
 administrator access is required. See `README.md` for the platform paths and
 font-cache behavior.
+The wizard also creates or extends the editable tab-separated
+`wonderdraft_font_names.txt`, mapping Wonderdraft's filename labels to the
+family, style, and weight embedded in each font file.
 
 ## SVG export
 
@@ -70,9 +73,11 @@ The SVG contains:
 - Wonderdraft labels as real SVG `<text>` elements.
 - Symbols as SVG images pointing to their source sprite files, or as embedded
   base64 PNG definitions with lightweight `<use>` clones.
-- Existing paths as editable SVG polylines when their point array can be identified.
-- Territories as editable SVG polygons with solid, gradient-blurred, dashed, or
+- Existing paths as editable SVG paths when their point array can be identified.
+- Territories as editable SVG paths with solid, gradient-blurred, dashed, or
   dark-dotted borders matching their Wonderdraft style.
+- Labels with mapped installed font names, stroke-behind-fill outlines, and
+  optional Wonderdraft glow filters.
 - `wd:*` metadata attributes containing the original Wonderdraft records for reliable round trips.
 
 When a custom or default sprite cannot be found, the exporter places a magenta-outlined SVG circle at the symbol position. The original symbol record remains attached to that circle.

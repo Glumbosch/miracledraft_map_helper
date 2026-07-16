@@ -1,5 +1,9 @@
 # Wonderdraft Map Editor
 
+[![CI](https://github.com/Glumbosch/wonderdraft_map_extractor/actions/workflows/ci.yml/badge.svg)](https://github.com/Glumbosch/wonderdraft_map_extractor/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Glumbosch/wonderdraft_map_extractor)](https://github.com/Glumbosch/wonderdraft_map_extractor/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A native desktop editor for inspecting and converting Wonderdraft
 `.wonderdraft_map` files. It can edit the decoded Godot data, exchange map
 layers with SVG editors, and replace embedded map images without loading every
@@ -8,9 +12,27 @@ binary payload into memory.
 > This is an experimental, unofficial tool. Keep an untouched backup of every
 > map and test edited maps in Wonderdraft before relying on them.
 
+This project is not affiliated with or endorsed by Wonderdraft or Megasploot.
+Wonderdraft itself and its bundled assets are not distributed with this project.
+
+## Download
+
+Prebuilt archives for Linux (x86_64), Windows (x86_64), and macOS (Apple
+Silicon) are attached to each [GitHub release](https://github.com/Glumbosch/wonderdraft_map_extractor/releases/latest).
+Release archives are produced by GitHub Actions and include SHA-256 checksums.
+They also include the default editable `wonderdraft_font_names.txt` mapping used
+for faithful SVG label font names.
+
+On Linux, extract the archive and run `./wonderdraft-editor`. To add it to your
+desktop application menu, run `./install-linux-launcher.sh` from the extracted
+directory. On Windows, extract the ZIP and run `wonderdraft-editor.exe`. On
+macOS, extract the archive and run `wonderdraft-editor` from Terminal; because
+the binary is currently unsigned, macOS may require explicit approval in
+Privacy & Security on first launch.
+
 ## Requirements
 
-- A Rust toolchain for building the editor.
+- Rust 1.87 or newer for building the editor from source.
 - A Wonderdraft installation if you want to resolve and export its built-in
   sprites.
 - Linux builds use X11 because native drag and drop is required.
@@ -53,8 +75,8 @@ uses `wonderdraft_map_extractor.png` as the fallback launcher icon, installs
 `~/.local/share/applications/wonderdraft-map-extractor.desktop` (or the
 equivalent location below `XDG_DATA_HOME`). No administrator access is needed.
 
-The repository also contains `wonderdraft-map-extractor.desktop`, which launches
-the release executable directly from this checkout.
+The repository also contains `wonderdraft-map-extractor.desktop`, which is the
+portable template used by the installer.
 
 ## First-start setup
 
@@ -94,6 +116,14 @@ Windows registers the fonts for the current user and notifies running
 applications; macOS automatically observes its user Fonts folder. Some already
 running applications may still need to be restarted before newly installed
 fonts appear.
+
+The same wizard step reads the internal family, style, and weight names from
+the discovered core and custom font files. It appends new mappings to
+`wonderdraft_font_names.txt` in the application working directory. The file is
+tab-separated and intentionally editable; rescanning never replaces an
+existing label. This lets Wonderdraft's filename-based label—for example
+`IM Fell English Italic`—export as the installed family `IM FELL English` with
+SVG italic styling.
 
 ### Wonderdraft.pck discovery
 
@@ -166,11 +196,22 @@ symbol with `mirror: true` is flipped vertically before rotation. Records with
 a positive `outline_width` and valid `outline_color` receive a reusable SVG
 outline filter.
 
+Roads and territory areas export as SVG `<path>` elements rather than
+`<polyline>` or `<polygon>` elements, which makes node editing more convenient
+in Inkscape. Their edited path endpoints round-trip to Wonderdraft point lists.
+
+Labels use the mapped installed font family, style, and weight. Text outlines
+use `paint-order="markers stroke fill"`, placing the stroke behind the fill.
+Label glow uses the record's `glow_color` and uses `glow_size` directly as the
+Gaussian blur `stdDeviation`; no glow filter is emitted when `glow_size` is
+zero.
+
 Territories retain their encoded records and editable point lists. Territory
 fill uses the record's `opacity`, while ordinary and dashed outlines use the
 territory color at full opacity. `border_gradient` uses a solid border at twice
 the configured width with a 10-pixel Gaussian blur. `border_dash` uses a dashed
-outline, and `border_dark_dot` uses a black dotted outline.
+outline. `border_dark_dot` uses a black dotted outline with a 0.42 width scale:
+Wonderdraft widths 10 and 13 become approximately 4.2 and 5.46 SVG pixels.
 
 ## Settings and generated data
 
@@ -212,5 +253,18 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
+Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development workflow, [SECURITY.md](SECURITY.md) for private vulnerability
+reporting, and [LICENSE](LICENSE) for the MIT license.
+
 See [SVG_INTERCHANGE_NOTES.md](SVG_INTERCHANGE_NOTES.md) for format details and
 [TEST_REPORT.md](TEST_REPORT.md) for the map/SVG verification scope.
+
+## Making a release
+
+Update the version in `Cargo.toml`, commit the corresponding `Cargo.lock`
+change, and push a matching semantic-version tag such as `v0.3.0`. The release
+workflow validates the version, builds all supported packages, generates
+checksums and provenance attestations, and publishes a GitHub release with
+automatically generated notes. See [RELEASING.md](RELEASING.md) for the exact
+maintainer checklist.

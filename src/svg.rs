@@ -1,7 +1,7 @@
 use crate::{
     Error, Result, Value,
     assets::Resolver,
-    godot_text,
+    fonts, godot_text,
     images::{self, Images},
 };
 use quick_xml::{Reader, events::Event};
@@ -365,6 +365,34 @@ fn points(v: &Value) -> Option<Vec<(f64, f64)>> {
     }
 }
 
+fn svg_path_data(points: &[(f64, f64)], position: (f64, f64), closed: bool) -> String {
+    let mut data = String::new();
+    for (index, (x, y)) in points.iter().enumerate() {
+        let command = if index == 0 { 'M' } else { 'L' };
+        data.push_str(&format!(
+            "{command} {:.6},{:.6} ",
+            x + position.0,
+            y + position.1
+        ));
+    }
+    if closed {
+        data.push('Z');
+    } else {
+        data.pop();
+    }
+    data
+}
+
+fn label_glow(record: &Value) -> Option<(String, f64, String, f64)> {
+    let size = n(record.get("glow_size"), 0.0);
+    if !size.is_finite() || size <= 0.0 {
+        return None;
+    }
+    let glow_color = record.get("glow_color")?;
+    let (color, alpha) = color(Some(glow_color), [1.0, 1.0, 1.0, 1.0]);
+    Some((format!("{size}|{color}|{alpha}"), size, color, alpha))
+}
+
 pub fn export(
     root: &Value,
     imageset: &Images,
@@ -376,7 +404,7 @@ pub fn export(
     let height = n(root.get("map_height"), 512.);
     let mut summary = Summary::default();
     let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:wd=\"{WD}\" width=\"{width}px\" height=\"{height}px\" viewBox=\"0 0 {width} {height}\" wd:format-version=\"2\" wd:map-width=\"{width}\" wd:map-height=\"{height}\">\n  <metadata>Wonderdraft Map Editor SVG interchange file</metadata>\n"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" xmlns:wd=\"{WD}\" width=\"{width}px\" height=\"{height}px\" viewBox=\"0 0 {width} {height}\" wd:format-version=\"2\" wd:map-width=\"{width}\" wd:map-height=\"{height}\">\n  <metadata>Wonderdraft Map Editor SVG interchange file</metadata>\n"
     );
     if options.background {
         xml.push_str("  <g id=\"wonderdraft-mask-background\">\n");
@@ -419,12 +447,8 @@ pub fn export(
                 let pos = vec2(r.get("position"), (0., 0.));
                 let (c, op) = color(r.get("color"), [0.2, 0.1, 0.05, 1.]);
                 let width = n(r.get("width"), 3.);
-                let ps = p
-                    .iter()
-                    .map(|(x, y)| format!("{:.6},{:.6}", x + pos.0, y + pos.1))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                xml.push_str(&format!("    <polyline id=\"wonderdraft-path-{i}\" points=\"{ps}\" fill=\"none\" stroke=\"{c}\" stroke-opacity=\"{op}\" stroke-width=\"{width}\" wd:kind=\"path\" wd:record=\"{}\"/>\n",record(r)));
+                let data = svg_path_data(&p, pos, false);
+                xml.push_str(&format!("    <path id=\"wonderdraft-path-{i}\" d=\"{data}\" fill=\"none\" stroke=\"{c}\" stroke-opacity=\"{op}\" stroke-width=\"{width}\" wd:kind=\"path\" wd:record=\"{}\"/>\n",record(r)));
                 summary.paths += 1;
             }
         }
@@ -457,39 +481,36 @@ pub fn export(
                     continue;
                 }
                 let position = vec2(territory.get("position"), (0.0, 0.0));
-                let points = points
-                    .iter()
-                    .map(|(x, y)| format!("{:.6},{:.6}", x + position.0, y + position.1))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let data = svg_path_data(&points, position, true);
                 let (territory_color, _) = color(territory.get("color"), [0.0, 0.0, 0.0, 1.0]);
                 let opacity = n(territory.get("opacity"), 1.0).clamp(0.0, 1.0);
                 let width = n(territory.get("width"), 1.0).max(0.0);
                 let style = territory.get("style").and_then(Value::as_str).unwrap_or("");
                 let metadata = format!(
-                    "id=\"wonderdraft-territory-{index}\" points=\"{points}\" fill=\"{territory_color}\" fill-opacity=\"{opacity}\" wd:kind=\"territory\" wd:style=\"{}\" wd:record=\"{}\"",
+                    "id=\"wonderdraft-territory-{index}\" d=\"{data}\" fill=\"{territory_color}\" fill-opacity=\"{opacity}\" wd:kind=\"territory\" wd:style=\"{}\" wd:record=\"{}\"",
                     esc(style),
                     record(territory)
                 );
                 if style.ends_with("border_gradient") {
                     xml.push_str(&format!(
-                        "    <polygon {metadata} stroke=\"none\"/>\n    <polygon points=\"{points}\" fill=\"none\" stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{}\" stroke-linejoin=\"round\" filter=\"url(#wonderdraft-territory-gradient-blur)\" wd:role=\"territory-border\"/>\n",
+                        "    <path {metadata} stroke=\"none\"/>\n    <path d=\"{data}\" fill=\"none\" stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{}\" stroke-linejoin=\"round\" filter=\"url(#wonderdraft-territory-gradient-blur)\" wd:role=\"territory-border\"/>\n",
                         width * 2.0
                     ));
                 } else if style.ends_with("border_dash") {
                     xml.push_str(&format!(
-                        "    <polygon {metadata} stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linejoin=\"round\" stroke-dasharray=\"{} {}\"/>\n",
+                        "    <path {metadata} stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linejoin=\"round\" stroke-dasharray=\"{} {}\"/>\n",
                         width * 2.0,
                         width
                     ));
                 } else if style.ends_with("border_dark_dot") {
+                    let dotted_width = width * 0.42;
                     xml.push_str(&format!(
-                        "    <polygon {metadata} stroke=\"#000000\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-dasharray=\"0 {}\"/>\n",
-                        width * 2.0
+                        "    <path {metadata} stroke=\"#000000\" stroke-opacity=\"1\" stroke-width=\"{dotted_width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-dasharray=\"0 {}\"/>\n",
+                        dotted_width * 2.0
                     ));
                 } else {
                     xml.push_str(&format!(
-                        "    <polygon {metadata} stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linejoin=\"round\"/>\n"
+                        "    <path {metadata} stroke=\"{territory_color}\" stroke-opacity=\"1\" stroke-width=\"{width}\" stroke-linejoin=\"round\"/>\n"
                     ));
                 }
                 summary.territories += 1;
@@ -667,16 +688,77 @@ pub fn export(
         xml.push_str("  </g>\n");
     }
     if options.labels {
+        let font_mapping = match fonts::load_name_mapping() {
+            Ok(mapping) => mapping,
+            Err(error) => {
+                summary
+                    .warnings
+                    .push(format!("Could not read the font-name map: {error}"));
+                HashMap::new()
+            }
+        };
+        let mut glow_filters = HashMap::new();
+        if let Some(labels) = root.get("labels").and_then(Value::as_array) {
+            let mut definitions = String::new();
+            for record in labels {
+                let Some((key, size, color, alpha)) = label_glow(record) else {
+                    continue;
+                };
+                if glow_filters.contains_key(&key) {
+                    continue;
+                }
+                let id = format!("wonderdraft-label-glow-{}", glow_filters.len());
+                definitions.push_str(&format!(
+                    "    <filter id=\"{id}\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\" inkscape:label=\"Drop Shadow\">\n      <feFlood result=\"flood\" in=\"SourceGraphic\" flood-opacity=\"{alpha}\" flood-color=\"{color}\"/>\n      <feGaussianBlur result=\"blur\" in=\"SourceGraphic\" stdDeviation=\"{size}\"/>\n      <feOffset result=\"offset\" in=\"blur\" dx=\"0\" dy=\"0\"/>\n      <feComposite result=\"comp1\" operator=\"in\" in=\"flood\" in2=\"offset\"/>\n      <feComposite result=\"comp2\" operator=\"over\" in=\"SourceGraphic\" in2=\"comp1\"/>\n    </filter>\n"
+                ));
+                glow_filters.insert(key, id);
+            }
+            if !definitions.is_empty() {
+                xml.push_str("  <defs id=\"wonderdraft-label-glow-filters\">\n");
+                xml.push_str(&definitions);
+                xml.push_str("  </defs>\n");
+            }
+        }
         xml.push_str("  <g id=\"wonderdraft-labels\">\n");
         if let Some(a) = root.get("labels").and_then(Value::as_array) {
             for (i, r) in a.iter().enumerate() {
                 let (x, y) = vec2(r.get("position"), (0., 0.));
                 let size = n(r.get("size"), 24.);
                 let text = r.get("text").and_then(Value::as_str).unwrap_or("");
-                let font = r
+                let font_label = r
                     .get("font")
                     .and_then(Value::as_str)
                     .unwrap_or("sans-serif");
+                let mapped_font = fonts::mapped_name(&font_mapping, font_label);
+                let family = mapped_font
+                    .map(|font| font.family.as_str())
+                    .unwrap_or(font_label);
+                let font_style = mapped_font
+                    .map(|font| font.style.as_str())
+                    .unwrap_or("normal");
+                let font_weight = mapped_font
+                    .map(|font| font.weight.as_str())
+                    .unwrap_or("normal");
+                let specification = if font_style == "normal" && font_weight == "normal" {
+                    family.to_owned()
+                } else {
+                    let variants = [font_weight, font_style]
+                        .into_iter()
+                        .filter(|value| *value != "normal")
+                        .map(|value| {
+                            value
+                                .chars()
+                                .next()
+                                .map(char::to_uppercase)
+                                .into_iter()
+                                .flatten()
+                                .chain(value.chars().skip(1))
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("{family} {variants}")
+                };
                 let (fill, op) = color(r.get("color"), [0., 0., 0., 1.]);
                 let anchor = match r.get("align").and_then(Value::as_f64).unwrap_or(1.) as i32 {
                     0 => "start",
@@ -689,7 +771,17 @@ pub fn export(
                 } else {
                     String::new()
                 };
-                xml.push_str(&format!("    <text id=\"wonderdraft-label-{i}\" x=\"{x}\" y=\"{y}\" font-family=\"{}\" font-size=\"{size}px\" text-anchor=\"{anchor}\" dominant-baseline=\"central\" fill=\"{fill}\" fill-opacity=\"{op}\" wd:kind=\"label\" wd:record=\"{}\"{transform}>{}</text>\n",esc(font),record(r),esc(text)));
+                let outline = outline_style(r)
+                    .map(|(_, width, color, alpha)| {
+                        format!(" stroke=\"{color}\" stroke-opacity=\"{alpha}\" stroke-width=\"{width}\" stroke-linecap=\"round\" paint-order=\"markers stroke fill\"")
+                    })
+                    .unwrap_or_else(|| " stroke=\"none\"".into());
+                let glow = label_glow(r)
+                    .and_then(|(key, _, _, _)| glow_filters.get(&key))
+                    .map(|id| format!(" filter=\"url(#{id})\""))
+                    .unwrap_or_default();
+                let css_family = specification.replace('\\', "\\\\").replace('\'', "\\'");
+                xml.push_str(&format!("    <text id=\"wonderdraft-label-{i}\" x=\"{x}\" y=\"{y}\" font-family=\"{}\" font-style=\"{font_style}\" font-weight=\"{font_weight}\" font-size=\"{size}px\" text-anchor=\"{anchor}\" dominant-baseline=\"central\" fill=\"{fill}\" fill-opacity=\"{op}\"{outline}{glow} style=\"font-style:{font_style};font-weight:{font_weight};-inkscape-font-specification:'{}';paint-order:markers stroke fill\" wd:kind=\"label\" wd:font-label=\"{}\" wd:record=\"{}\"{transform}>{}</text>\n",esc(family),esc(&css_family),esc(font_label),record(r),esc(text)));
                 summary.labels += 1;
             }
         }
@@ -721,8 +813,16 @@ fn attr<'a>(e: &'a El, name: &str) -> Option<&'a str> {
         .iter()
         .find_map(|(k, v)| (k == name || k.ends_with(&format!(":{name}"))).then_some(v.as_str()))
 }
+fn presentation<'a>(e: &'a El, name: &str) -> Option<&'a str> {
+    attr(e, name).or_else(|| {
+        attr(e, "style")?.split(';').find_map(|declaration| {
+            let (property, value) = declaration.split_once(':')?;
+            (property.trim() == name).then_some(value.trim())
+        })
+    })
+}
 fn f(e: &El, name: &str, d: f64) -> f64 {
-    attr(e, name)
+    presentation(e, name)
         .and_then(|v| v.trim_end_matches("px").parse().ok())
         .unwrap_or(d)
 }
@@ -757,23 +857,165 @@ fn transformed_rect(element: &El) -> ((f64, f64), f64, f64, f64, bool) {
     (center, width, height, angle, mirrored)
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PathToken {
+    Command(char),
+    Number(f64),
+}
+
+fn path_tokens(data: &str) -> Vec<PathToken> {
+    let bytes = data.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let character = bytes[index] as char;
+        if character.is_ascii_alphabetic() {
+            tokens.push(PathToken::Command(character));
+            index += 1;
+            continue;
+        }
+        if character.is_ascii_whitespace() || character == ',' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        if matches!(bytes[index], b'+' | b'-') {
+            index += 1;
+        }
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == b'.' {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+        }
+        if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+            index += 1;
+            if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+                index += 1;
+            }
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+        }
+        if start == index {
+            index += 1;
+        } else if let Ok(number) = data[start..index].parse() {
+            tokens.push(PathToken::Number(number));
+        }
+    }
+    tokens
+}
+
+fn path_endpoints(data: &str) -> Vec<(f64, f64)> {
+    let tokens = path_tokens(data);
+    let mut points = Vec::new();
+    let mut index = 0;
+    let mut command = 'M';
+    let mut current = (0.0, 0.0);
+    let mut start = current;
+    while index < tokens.len() {
+        if let PathToken::Command(next) = tokens[index] {
+            command = next;
+            index += 1;
+            if matches!(command, 'Z' | 'z') {
+                current = start;
+                continue;
+            }
+        }
+        let count = match command.to_ascii_uppercase() {
+            'M' | 'L' | 'T' => 2,
+            'H' | 'V' => 1,
+            'S' | 'Q' => 4,
+            'C' => 6,
+            'A' => 7,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        if index + count > tokens.len() {
+            break;
+        }
+        if tokens[index..index + count]
+            .iter()
+            .any(|token| matches!(token, PathToken::Command(_)))
+        {
+            continue;
+        }
+        let values = tokens[index..index + count]
+            .iter()
+            .filter_map(|token| match token {
+                PathToken::Number(value) => Some(*value),
+                PathToken::Command(_) => None,
+            })
+            .collect::<Vec<_>>();
+        index += count;
+        let relative = command.is_ascii_lowercase();
+        let endpoint = match command.to_ascii_uppercase() {
+            'H' => (
+                if relative {
+                    current.0 + values[0]
+                } else {
+                    values[0]
+                },
+                current.1,
+            ),
+            'V' => (
+                current.0,
+                if relative {
+                    current.1 + values[0]
+                } else {
+                    values[0]
+                },
+            ),
+            'M' | 'L' | 'T' => {
+                let offset = values.len() - 2;
+                if relative {
+                    (current.0 + values[offset], current.1 + values[offset + 1])
+                } else {
+                    (values[offset], values[offset + 1])
+                }
+            }
+            'S' | 'Q' | 'C' | 'A' => {
+                let offset = values.len() - 2;
+                if relative {
+                    (current.0 + values[offset], current.1 + values[offset + 1])
+                } else {
+                    (values[offset], values[offset + 1])
+                }
+            }
+            _ => current,
+        };
+        current = endpoint;
+        if matches!(command, 'M' | 'm') {
+            start = current;
+            command = if relative { 'l' } else { 'L' };
+        }
+        points.push(current);
+    }
+    points
+}
+
 fn transformed_points(element: &El, position: (f64, f64)) -> Vec<Vec<f32>> {
-    attr(element, "points")
-        .unwrap_or("")
-        .split_whitespace()
-        .filter_map(|point| {
-            let mut numbers = point
-                .split(',')
-                .filter_map(|value| value.parse::<f32>().ok());
-            let point = mat_apply(
-                element.matrix,
-                numbers.next()? as f64,
-                numbers.next()? as f64,
-            );
-            Some(vec![
-                (point.0 - position.0) as f32,
-                (point.1 - position.1) as f32,
-            ])
+    let raw_points = if let Some(points) = attr(element, "points") {
+        points
+            .split_whitespace()
+            .filter_map(|point| {
+                let mut numbers = point.split(',').filter_map(|value| value.parse().ok());
+                Some((numbers.next()?, numbers.next()?))
+            })
+            .collect()
+    } else {
+        path_endpoints(attr(element, "d").unwrap_or(""))
+    };
+    raw_points
+        .into_iter()
+        .map(|(x, y)| {
+            let point = mat_apply(element.matrix, x, y);
+            vec![(point.0 - position.0) as f32, (point.1 - position.1) as f32]
         })
         .collect()
 }
@@ -854,6 +1096,15 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
     let mut paths = Vec::new();
     let mut territories = Vec::new();
     let mut summary = Summary::default();
+    let font_mapping = match fonts::load_name_mapping() {
+        Ok(mapping) => mapping,
+        Err(error) => {
+            summary
+                .warnings
+                .push(format!("Could not read the font-name map: {error}"));
+            HashMap::new()
+        }
+    };
     for e in found {
         match attr(&e, "kind") {
             Some("label") => {
@@ -876,8 +1127,28 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                 );
                 r.set("rotation", Value::Real(normalize_angle(angle)));
                 r.set("text", Value::String(e.text.trim().to_owned()));
-                if let Some(font) = attr(&e, "font-family") {
-                    r.set("font", Value::String(font.to_owned()));
+                if let Some(font) = presentation(&e, "font-family") {
+                    let family = font.trim_matches(['\'', '"']);
+                    let style = presentation(&e, "font-style").unwrap_or("normal");
+                    let weight = presentation(&e, "font-weight").unwrap_or("normal");
+                    let original_label = r
+                        .get("font")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let original_still_matches = fonts::mapped_name(&font_mapping, &original_label)
+                        .is_some_and(|mapped| {
+                            mapped.family.eq_ignore_ascii_case(family)
+                                && mapped.style.eq_ignore_ascii_case(style)
+                                && mapped.weight.eq_ignore_ascii_case(weight)
+                        });
+                    let label = if original_still_matches {
+                        original_label
+                    } else {
+                        fonts::wonderdraft_label_for_name(&font_mapping, family, style, weight)
+                            .unwrap_or_else(|| family.to_owned())
+                    };
+                    r.set("font", Value::String(label));
                 }
                 labels.push(r);
                 summary.labels += 1
@@ -1372,9 +1643,12 @@ mod tests {
         assert!(xml.contains("stroke-width=\"20\""));
         assert!(xml.contains("stroke-dasharray=\"20 10\""));
         assert!(xml.contains("stroke=\"#000000\""));
-        assert!(xml.contains("stroke-dasharray=\"0 20\""));
+        assert!(xml.contains("stroke-width=\"4.2\""));
+        assert!(xml.contains("stroke-dasharray=\"0 8.4\""));
         assert!(xml.contains("fill-opacity=\"0.05\""));
         assert!(xml.contains("stroke-opacity=\"1\""));
+        assert!(xml.contains("<path id=\"wonderdraft-territory-"));
+        assert!(!xml.contains("<polygon"));
         xml = xml.replacen("15.000000,27.000000", "25.000000,37.000000", 1);
         fs::write(&destination, xml).unwrap();
 
@@ -1393,6 +1667,98 @@ mod tests {
                 .and_then(Value::as_str)
                 .unwrap()
                 .contains("Vector2( 20, 30 )")
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn svg_path_commands_are_imported_as_wonderdraft_points() {
+        assert_eq!(
+            path_endpoints("M 10,20 L 30,40 l 5,-5 H 50 v 10 C 1,2 3,4 60,70 Z"),
+            vec![
+                (10.0, 20.0),
+                (30.0, 40.0),
+                (35.0, 35.0),
+                (50.0, 35.0),
+                (50.0, 45.0),
+                (60.0, 70.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn labels_use_font_mapping_outline_paint_order_and_nonzero_glow() {
+        let base =
+            std::env::temp_dir().join(format!("wonderdraft-svg-labels-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let color = |values: [f32; 4]| Value::Vector {
+            kind: "Color".into(),
+            values: values.into(),
+        };
+        let label = |text: &str, glow_size: f64| {
+            dict(vec![
+                ("text", Value::String(text.into())),
+                ("font", Value::String("IM Fell English Italic".into())),
+                (
+                    "position",
+                    Value::Vector {
+                        kind: "Vector2".into(),
+                        values: vec![10.0, 20.0],
+                    },
+                ),
+                ("size", Value::Int(20)),
+                ("color", color([0.0, 0.0, 0.7, 1.0])),
+                ("outline_width", Value::Real(0.370417)),
+                ("outline_color", color([0.0, 0.5, 0.0, 1.0])),
+                ("glow_size", Value::Real(glow_size)),
+                (
+                    "glow_color",
+                    color([225.0 / 255.0, 217.0 / 255.0, 41.0 / 255.0, 0.843137]),
+                ),
+            ])
+        };
+        let root = dict(vec![
+            ("map_width", Value::Int(100)),
+            ("map_height", Value::Int(100)),
+            (
+                "labels",
+                Value::Array(vec![label("Glow", 3.0), label("No glow", 0.0)]),
+            ),
+        ]);
+        let destination = base.join("labels.svg");
+
+        export(
+            &root,
+            &Vec::new(),
+            &destination,
+            &Resolver::new(&Settings::default()),
+            ExportOptions {
+                background: false,
+                paths: false,
+                symbols: false,
+                labels: true,
+                territories: false,
+                embed_background: false,
+                embed_symbols: false,
+            },
+        )
+        .unwrap();
+        let xml = fs::read_to_string(destination).unwrap();
+        assert!(xml.contains("font-family=\"IM FELL English\""));
+        assert!(xml.contains("font-style=\"italic\""));
+        assert!(xml.contains("-inkscape-font-specification:'IM FELL English Italic'"));
+        assert!(xml.contains("paint-order=\"markers stroke fill\""));
+        assert!(xml.contains("stroke-width=\"0.370417\""));
+        assert!(xml.contains("flood-color=\"#e1d929\""));
+        assert!(xml.contains("stdDeviation=\"3\""));
+        assert_eq!(
+            xml.matches("<filter id=\"wonderdraft-label-glow-").count(),
+            1
+        );
+        assert_eq!(
+            xml.matches("filter=\"url(#wonderdraft-label-glow-").count(),
+            1
         );
         let _ = fs::remove_dir_all(base);
     }

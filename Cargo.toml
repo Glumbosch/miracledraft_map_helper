@@ -2,8 +2,14 @@
 name = "wonderdraft-editor"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.87"
 description = "Native Rust editor for Wonderdraft map files with SVG interchange"
 license = "MIT"
+repository = "https://github.com/Glumbosch/wonderdraft_map_extractor"
+homepage = "https://github.com/Glumbosch/wonderdraft_map_extractor"
+readme = "README.md"
+keywords = ["wonderdraft", "map-editor", "svg"]
+categories = ["graphics", "parser-implementations"]
 
 [dependencies]
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "x11"] }

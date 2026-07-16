@@ -42,16 +42,31 @@ original source shape, floods the remaining outline with the configured color
 and alpha, and merges the original symbol on top. The filter region is expanded
 so the outline is not clipped.
 
-## Territories
+## Paths and territories
 
-Territories export as SVG polygons with `wd:kind="territory"`. The original
-record remains in `wd:record`, while polygon point edits are converted back to
-the record's original string, array, or pool-vector representation during
-import.
+Roads and territories export as SVG `<path>` elements with `wd:kind="path"` or
+`wd:kind="territory"`. The original record remains in `wd:record`, while path
+endpoint edits are converted back to the record's original string, array, or
+pool-vector representation during import. The importer also continues to
+accept older `points` attributes.
 
 The territory color is used for the fill and ordinary border. Fill opacity
 comes from the record's `opacity`; borders are drawn at full opacity.
 `border_dash` adds an SVG dash pattern. `border_dark_dot` uses a black,
-round-capped dotted line. `border_gradient` emits a separate solid border at
-twice the configured width and applies a reusable `feGaussianBlur` with
+round-capped dotted line and converts Wonderdraft width to SVG width with a
+factor of `0.42`. `border_gradient` emits a separate solid border at twice the
+configured width and applies a reusable `feGaussianBlur` with
 `stdDeviation="10"`, keeping the fill sharp.
+
+## Label fonts, outlines, and glow
+
+`wonderdraft_font_names.txt` maps Wonderdraft's filename-derived font labels to
+the family, style, and weight stored inside the actual font. The setup wizard
+extracts names from core and custom-pack fonts and appends missing mappings;
+existing lines remain user-editable and are never replaced automatically.
+
+Label strokes use `paint-order="markers stroke fill"` so the fill is painted
+over the inner half of the outline. Positive `glow_size` values create a
+deduplicated flood, Gaussian-blur, zero-offset, and composite filter using
+`glow_color`; `glow_size` is the SVG `stdDeviation`. A zero glow size produces
+no filter.

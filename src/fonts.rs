@@ -1,6 +1,8 @@
 use crate::{Error, Result, error::IoContext};
 use std::{
+    collections::HashMap,
     env, fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -27,8 +29,268 @@ pub struct Candidate {
     pub origin: Origin,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FontName {
+    pub family: String,
+    pub style: String,
+    pub weight: String,
+}
+
 pub fn source_dir() -> PathBuf {
     crate::pck::default_output_dir().join("fonts")
+}
+
+pub fn name_mapping_path() -> PathBuf {
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("wonderdraft_font_names.txt")
+}
+
+pub fn load_name_mapping() -> Result<HashMap<String, FontName>> {
+    let path = name_mapping_path();
+    if !path.is_file() {
+        return Ok(HashMap::new());
+    }
+    let text = fs::read_to_string(&path).at(&path)?;
+    let mut mapping = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut columns = line.split('\t');
+        let Some(label) = columns
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let Some(family) = columns
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let style = columns.next().map(str::trim).unwrap_or("normal");
+        let weight = columns.next().map(str::trim).unwrap_or("normal");
+        mapping.insert(
+            label.to_owned(),
+            FontName {
+                family: family.to_owned(),
+                style: if style.is_empty() { "normal" } else { style }.to_owned(),
+                weight: if weight.is_empty() { "normal" } else { weight }.to_owned(),
+            },
+        );
+    }
+    Ok(mapping)
+}
+
+pub fn mapped_name<'a>(
+    mapping: &'a HashMap<String, FontName>,
+    wonderdraft_label: &str,
+) -> Option<&'a FontName> {
+    let label = Path::new(wonderdraft_label)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(wonderdraft_label);
+    mapping.get(label).or_else(|| {
+        mapping
+            .iter()
+            .find_map(|(key, value)| key.eq_ignore_ascii_case(label).then_some(value))
+    })
+}
+
+pub fn wonderdraft_label_for_name(
+    mapping: &HashMap<String, FontName>,
+    family: &str,
+    style: &str,
+    weight: &str,
+) -> Option<String> {
+    mapping.iter().find_map(|(label, name)| {
+        (name.family.eq_ignore_ascii_case(family)
+            && name.style.eq_ignore_ascii_case(style)
+            && name.weight.eq_ignore_ascii_case(weight))
+        .then(|| label.clone())
+    })
+}
+
+pub fn update_name_mapping(candidates: &[Candidate]) -> Result<usize> {
+    let path = name_mapping_path();
+    let existing = load_name_mapping()?;
+    let mut additions = Vec::new();
+    for candidate in candidates {
+        let Some(label) = candidate
+            .path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if existing.keys().any(|key| key.eq_ignore_ascii_case(label))
+            || additions
+                .iter()
+                .any(|(known, _): &(String, FontName)| known.eq_ignore_ascii_case(label))
+        {
+            continue;
+        }
+        if let Some(name) = font_name(&candidate.path)? {
+            additions.push((label.to_owned(), name));
+        }
+    }
+    if additions.is_empty() && path.is_file() {
+        return Ok(0);
+    }
+    let new_file = !path.is_file();
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .at(&path)?;
+    if new_file {
+        writeln!(
+            file,
+            "# Wonderdraft font label<TAB>installed font family<TAB>SVG style<TAB>SVG weight"
+        )
+        .at(&path)?;
+        writeln!(
+            file,
+            "# This file is editable. Existing rows are never replaced during font discovery."
+        )
+        .at(&path)?;
+    }
+    additions.sort_by(|left, right| left.0.cmp(&right.0));
+    for (label, name) in &additions {
+        writeln!(
+            file,
+            "{label}\t{}\t{}\t{}",
+            name.family, name.style, name.weight
+        )
+        .at(&path)?;
+    }
+    Ok(additions.len())
+}
+
+fn be_u16(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(
+        data.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn be_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn decode_font_string(platform: u16, bytes: &[u8]) -> Option<String> {
+    let decoded = if platform == 0 || platform == 3 {
+        let words = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16(&words).ok()?
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    let decoded = decoded.trim_matches('\0').trim().to_owned();
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+fn font_name(path: &Path) -> Result<Option<FontName>> {
+    let data = fs::read(path).at(path)?;
+    let face_offset = if data.get(0..4) == Some(b"ttcf") {
+        be_u32(&data, 12).map(|value| value as usize).unwrap_or(0)
+    } else {
+        0
+    };
+    let Some(table_count) = be_u16(&data, face_offset + 4).map(usize::from) else {
+        return Ok(None);
+    };
+    let mut name_table = None;
+    for index in 0..table_count {
+        let record = face_offset + 12 + index * 16;
+        if data.get(record..record + 4) == Some(b"name") {
+            name_table = be_u32(&data, record + 8).map(|value| value as usize);
+            break;
+        }
+    }
+    let Some(table) = name_table else {
+        return Ok(None);
+    };
+    let Some(count) = be_u16(&data, table + 2).map(usize::from) else {
+        return Ok(None);
+    };
+    let Some(strings) = be_u16(&data, table + 4).map(|value| table + value as usize) else {
+        return Ok(None);
+    };
+    let mut names: HashMap<u16, (i32, String)> = HashMap::new();
+    for index in 0..count {
+        let record = table + 6 + index * 12;
+        let (Some(platform), Some(language), Some(name_id), Some(length), Some(offset)) = (
+            be_u16(&data, record),
+            be_u16(&data, record + 4),
+            be_u16(&data, record + 6),
+            be_u16(&data, record + 8).map(usize::from),
+            be_u16(&data, record + 10).map(usize::from),
+        ) else {
+            continue;
+        };
+        if !matches!(name_id, 1 | 2 | 16 | 17) {
+            continue;
+        }
+        let Some(value) = data
+            .get(strings + offset..strings + offset + length)
+            .and_then(|bytes| decode_font_string(platform, bytes))
+        else {
+            continue;
+        };
+        let score = match (platform, language) {
+            (3, 0x0409) => 4,
+            (0, _) => 3,
+            (3, _) => 2,
+            _ => 1,
+        };
+        if names
+            .get(&name_id)
+            .is_none_or(|(old_score, _)| score > *old_score)
+        {
+            names.insert(name_id, (score, value));
+        }
+    }
+    let family = names
+        .remove(&16)
+        .or_else(|| names.remove(&1))
+        .map(|(_, value)| value);
+    let Some(family) = family else {
+        return Ok(None);
+    };
+    let subfamily = names
+        .remove(&17)
+        .or_else(|| names.remove(&2))
+        .map(|(_, value)| value)
+        .unwrap_or_else(|| "Regular".into());
+    let lowercase = subfamily.to_ascii_lowercase();
+    let style = if lowercase.contains("italic") {
+        "italic"
+    } else if lowercase.contains("oblique") {
+        "oblique"
+    } else {
+        "normal"
+    };
+    let weight = if lowercase.contains("bold") {
+        "bold"
+    } else {
+        "normal"
+    };
+    Ok(Some(FontName {
+        family,
+        style: style.into(),
+        weight: weight.into(),
+    }))
 }
 
 pub fn user_fonts_dir() -> Result<PathBuf> {
@@ -306,6 +568,43 @@ fn refresh_font_registry(installation: &mut Installation) {
 mod tests {
     use super::*;
 
+    fn test_font(family: &str, subfamily: &str) -> Vec<u8> {
+        let encode = |value: &str| {
+            value
+                .encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>()
+        };
+        let family = encode(family);
+        let subfamily = encode(subfamily);
+        let mut name = Vec::new();
+        name.extend_from_slice(&0u16.to_be_bytes());
+        name.extend_from_slice(&2u16.to_be_bytes());
+        name.extend_from_slice(&30u16.to_be_bytes());
+        for (name_id, length, offset) in [
+            (1u16, family.len() as u16, 0u16),
+            (2u16, subfamily.len() as u16, family.len() as u16),
+        ] {
+            name.extend_from_slice(&3u16.to_be_bytes());
+            name.extend_from_slice(&1u16.to_be_bytes());
+            name.extend_from_slice(&0x0409u16.to_be_bytes());
+            name.extend_from_slice(&name_id.to_be_bytes());
+            name.extend_from_slice(&length.to_be_bytes());
+            name.extend_from_slice(&offset.to_be_bytes());
+        }
+        name.extend_from_slice(&family);
+        name.extend_from_slice(&subfamily);
+
+        let mut font = vec![0; 28];
+        font[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        font[4..6].copy_from_slice(&1u16.to_be_bytes());
+        font[12..16].copy_from_slice(b"name");
+        font[20..24].copy_from_slice(&28u32.to_be_bytes());
+        font[24..28].copy_from_slice(&(name.len() as u32).to_be_bytes());
+        font.extend_from_slice(&name);
+        font
+    }
+
     #[test]
     fn installation_skips_identical_fonts_and_preserves_conflicts() {
         let base = env::temp_dir().join(format!(
@@ -380,6 +679,23 @@ mod tests {
                 .iter()
                 .all(|candidate| !candidate.path.ends_with("not-a-font.ttf"))
         );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn extracts_internal_family_style_and_weight_from_font_name_table() {
+        let base =
+            env::temp_dir().join(format!("wonderdraft-font-name-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("IM Fell English Italic.ttf");
+        fs::write(&path, test_font("IM FELL English", "Bold Italic")).unwrap();
+
+        let name = font_name(&path).unwrap().unwrap();
+
+        assert_eq!(name.family, "IM FELL English");
+        assert_eq!(name.style, "italic");
+        assert_eq!(name.weight, "bold");
         let _ = fs::remove_dir_all(base);
     }
 }

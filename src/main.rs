@@ -562,6 +562,7 @@ impl App {
         let previous = std::mem::take(&mut self.font_choices);
         match fonts::discover(Some(&core), custom.as_deref()) {
             Ok(candidates) => {
+                let mapping_result = fonts::update_name_mapping(&candidates);
                 self.font_choices = candidates
                     .into_iter()
                     .map(|candidate| {
@@ -576,7 +577,7 @@ impl App {
                         }
                     })
                     .collect();
-                self.font_discovery_error = None;
+                self.font_discovery_error = mapping_result.err().map(|error| error.to_string());
             }
             Err(error) => {
                 self.font_discovery_error = Some(error.to_string());
@@ -781,6 +782,13 @@ impl App {
                             Err(error) => {
                                 ui.colored_label(egui::Color32::YELLOW, error.to_string());
                             }
+                        }
+                        ui.label(format!(
+                            "Editable font-name map: {}",
+                            fonts::name_mapping_path().display()
+                        ));
+                        if ui.button("Rescan fonts and update name map").clicked() {
+                            self.refresh_font_choices();
                         }
                         if let Some(error) = &self.font_discovery_error {
                             ui.colored_label(

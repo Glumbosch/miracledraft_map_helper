@@ -1,0 +1,55 @@
+name: Bug report
+description: Report reproducible incorrect behavior or a crash.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach proprietary Wonderdraft files or paid assets. Remove private paths from logs.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: v0.3.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include the expected behavior and the actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: text
+  - type: checkboxes
+    id: backup
+    attributes:
+      label: Data safety
+      options:
+        - label: I reproduced this using a backup or disposable copy of the map.
+          required: true

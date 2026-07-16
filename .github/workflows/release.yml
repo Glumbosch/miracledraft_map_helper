@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Compare tag and Cargo package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          test "$RELEASE_TAG" = "v$package_version" || {
+            echo "Tag $RELEASE_TAG does not match Cargo.toml version $package_version" >&2
+            exit 1
+          }
+
+  build:
+    name: Package ${{ matrix.name }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            artifact: wonderdraft-editor-linux-x86_64
+          - name: Windows x86_64
+            os: windows-latest
+            artifact: wonderdraft-editor-windows-x86_64
+          - name: macOS Apple Silicon
+            os: macos-15
+            artifact: wonderdraft-editor-macos-aarch64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo files
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          package="wonderdraft-editor-${version}-linux-x86_64"
+          mkdir -p "dist/$package"
+          install -m 755 target/release/wonderdraft-editor "dist/$package/wonderdraft-editor"
+          install -m 755 install-linux-launcher.sh "dist/$package/install-linux-launcher.sh"
+          install -m 644 README.md LICENSE wonderdraft_font_names.txt wonderdraft-map-extractor.desktop wonderdraft_map_extractor.png wonderdraft_map_extractor.svg "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $package = "wonderdraft-editor-$version-windows-x86_64"
+          New-Item -ItemType Directory -Force "dist/$package" | Out-Null
+          Copy-Item target/release/wonderdraft-editor.exe "dist/$package/"
+          Copy-Item README.md, LICENSE, wonderdraft_font_names.txt "dist/$package/"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+
+      - name: Package macOS archive
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          package="wonderdraft-editor-${version}-macos-aarch64"
+          mkdir -p "dist/$package"
+          install -m 755 target/release/wonderdraft-editor "dist/$package/wonderdraft-editor"
+          install -m 644 README.md LICENSE wonderdraft_font_names.txt "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wonderdraft-editor-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+
+      - name: Attest release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi
