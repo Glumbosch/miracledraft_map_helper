@@ -83,8 +83,8 @@ fn rotation_about(angle: f64, (x, y): (f64, f64)) -> Matrix {
         [1., 0., 0., 1., -x, -y],
     )
 }
-fn mirror_about_x(x: f64) -> Matrix {
-    [-1., 0., 0., 1., 2. * x, 0.]
+fn mirror_about_y(y: f64) -> Matrix {
+    [1., 0., 0., -1., 0., 2. * y]
 }
 fn matrix_text(m: Matrix) -> String {
     format!(
@@ -308,6 +308,24 @@ fn custom_color_matrix(record: &Value) -> Option<String> {
         channels[2][3]
     ))
 }
+
+fn outline_style(record: &Value) -> Option<(String, f64, String, f64)> {
+    let width = n(record.get("outline_width"), 0.0);
+    if !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+    let outline_color = record.get("outline_color")?;
+    let Value::Vector { kind, values } = outline_color else {
+        return None;
+    };
+    if kind != "Color" || values.len() < 4 || values.iter().take(4).any(|value| !value.is_finite())
+    {
+        return None;
+    }
+    let (color, alpha) = color(Some(outline_color), [0.0, 0.0, 0.0, 1.0]);
+    let key = format!("{width}|{color}|{alpha}");
+    Some((key, width, color, alpha))
+}
 fn record(v: &Value) -> String {
     b64(godot_text::format(v).as_bytes(), true)
 }
@@ -410,6 +428,35 @@ pub fn export(
         xml.push_str("  </g>\n");
     }
     if options.symbols {
+        let mut outline_filters = HashMap::new();
+        if let Some(symbols) = root.get("symbols").and_then(Value::as_array) {
+            let mut definitions = String::new();
+            for record in symbols {
+                let texture = record.get("texture").and_then(Value::as_str).unwrap_or("");
+                if resolver.asset_info(texture).is_none() {
+                    continue;
+                }
+                let Some((key, width, color, alpha)) = outline_style(record) else {
+                    continue;
+                };
+                if outline_filters.contains_key(&key) {
+                    continue;
+                }
+                let id = format!(
+                    "wonderdraft-symbol-outline-filter-{}",
+                    outline_filters.len()
+                );
+                definitions.push_str(&format!(
+                    "    <filter id=\"{id}\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\">\n      <feMorphology in=\"SourceAlpha\" operator=\"dilate\" radius=\"{width}\" result=\"wonderdraft-outline-mask-outer\"/>\n      <feComposite in=\"wonderdraft-outline-mask-outer\" in2=\"SourceAlpha\" operator=\"out\" result=\"wonderdraft-outline-mask\"/>\n      <feFlood flood-color=\"{color}\" flood-opacity=\"{alpha}\" result=\"wonderdraft-outline-color\"/>\n      <feComposite in=\"wonderdraft-outline-color\" in2=\"wonderdraft-outline-mask\" operator=\"in\" result=\"wonderdraft-outline\"/>\n      <feMerge>\n        <feMergeNode in=\"wonderdraft-outline\"/>\n        <feMergeNode in=\"SourceGraphic\"/>\n      </feMerge>\n    </filter>\n"
+                ));
+                outline_filters.insert(key, id);
+            }
+            if !definitions.is_empty() {
+                xml.push_str("  <defs id=\"wonderdraft-symbol-outline-filters\">\n");
+                xml.push_str(&definitions);
+                xml.push_str("  </defs>\n");
+            }
+        }
         let mut custom_color_filters = HashMap::new();
         if let Some(symbols) = root.get("symbols").and_then(Value::as_array) {
             let mut definitions = String::new();
@@ -491,7 +538,7 @@ pub fn export(
                     let image_y = visual_center.1 - h / 2.0;
                     let mut transform = IDENTITY;
                     if mirrored {
-                        transform = mat_mul(transform, mirror_about_x(visual_center.0));
+                        transform = mat_mul(transform, mirror_about_y(visual_center.1));
                     }
                     if rotation != 0.0 {
                         transform = mat_mul(rotation_about(rotation, (x, y)), transform);
@@ -505,6 +552,8 @@ pub fn export(
                         .and_then(|matrix| custom_color_filters.get(&matrix))
                         .map(|id| format!(" filter=\"url(#{id})\""))
                         .unwrap_or_default();
+                    let outline_filter =
+                        outline_style(r).and_then(|(key, _, _, _)| outline_filters.get(&key));
                     let common = format!(
                         "id=\"wonderdraft-symbol-{i}\" x=\"{image_x}\" y=\"{image_y}\" width=\"{w}\" height=\"{h}\" opacity=\"{alpha}\" wd:kind=\"symbol\" wd:texture=\"{}\" wd:record=\"{}\" wd:source-width=\"{}\" wd:source-height=\"{}\" wd:base-radius=\"{}\" wd:offset-x=\"{}\" wd:offset-y=\"{}\" wd:export-width=\"{w}\" wd:export-height=\"{h}\"{transform_attr}{filter_attr}",
                         esc(texture),
@@ -515,18 +564,24 @@ pub fn export(
                         offset.0,
                         offset.1
                     );
-                    if let Some(definition) = embedded_symbols.get(&symbol_path_key(&asset.path)) {
-                        xml.push_str(&format!(
+                    let element = if let Some(definition) =
+                        embedded_symbols.get(&symbol_path_key(&asset.path))
+                    {
+                        format!(
                             "    <use {common} href=\"#{definition}\" xlink:href=\"#{definition}\"/>\n"
-                        ));
+                        )
                     } else {
                         let href = url::Url::from_file_path(&asset.path)
                             .map(|url| url.to_string())
                             .unwrap_or_else(|_| asset.path.to_string_lossy().into_owned());
+                        format!("    <image {common} xlink:href=\"{}\"/>\n", esc(&href))
+                    };
+                    if let Some(filter) = outline_filter {
                         xml.push_str(&format!(
-                            "    <image {common} xlink:href=\"{}\"/>\n",
-                            esc(&href)
+                            "    <g id=\"wonderdraft-symbol-outline-{i}\" filter=\"url(#{filter})\">\n  {element}    </g>\n"
                         ));
+                    } else {
+                        xml.push_str(&element);
                     }
                 } else {
                     summary.missing_symbols += 1;
@@ -628,7 +683,7 @@ fn transformed_rect(element: &El) -> ((f64, f64), f64, f64, f64, bool) {
     let width = (px.0 - p0.0).hypot(px.1 - p0.1);
     let height = (py.0 - p0.0).hypot(py.1 - p0.1);
     let (_, _, raw, mirrored) = matrix_scale_rotation(element.matrix);
-    let angle = normalize_angle(raw + if mirrored { std::f64::consts::PI } else { 0. });
+    let angle = normalize_angle(raw);
     (center, width, height, angle, mirrored)
 }
 pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Summary> {
@@ -714,8 +769,7 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                     if e.tag == "circle" {
                         let center = mat_apply(e.matrix, f(&e, "cx", 0.), f(&e, "cy", 0.));
                         let (sx, sy, raw, mirrored) = matrix_scale_rotation(e.matrix);
-                        let angle =
-                            normalize_angle(raw + if mirrored { std::f64::consts::PI } else { 0. });
+                        let angle = normalize_angle(raw);
                         let radius = f(&e, "r", 1.);
                         (center, 2. * radius * sx, 2. * radius * sy, angle, mirrored)
                     } else {
@@ -986,6 +1040,29 @@ mod tests {
     }
 
     #[test]
+    fn rotations_are_clockwise_and_vertical_mirroring_happens_first() {
+        let clockwise = rotation_about(std::f64::consts::FRAC_PI_2, (0.0, 0.0));
+        let counter_clockwise = rotation_about(-std::f64::consts::FRAC_PI_2, (0.0, 0.0));
+        let mirrored = mirror_about_y(0.0);
+        let combined = mat_mul(clockwise, mirrored);
+
+        let positive = mat_apply(clockwise, 2.0, 0.0);
+        let negative = mat_apply(counter_clockwise, 2.0, 0.0);
+        let flipped = mat_apply(mirrored, 2.0, 3.0);
+        let flipped_then_rotated = mat_apply(combined, 2.0, 3.0);
+        assert!(positive.0.abs() < 1e-9 && (positive.1 - 2.0).abs() < 1e-9);
+        assert!(negative.0.abs() < 1e-9 && (negative.1 + 2.0).abs() < 1e-9);
+        assert!((flipped.0 - 2.0).abs() < 1e-9 && (flipped.1 + 3.0).abs() < 1e-9);
+        assert!(
+            (flipped_then_rotated.0 - 3.0).abs() < 1e-9
+                && (flipped_then_rotated.1 - 2.0).abs() < 1e-9
+        );
+        let (_, _, angle, is_mirrored) = matrix_scale_rotation(combined);
+        assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        assert!(is_mirrored);
+    }
+
+    #[test]
     fn embedded_symbols_use_one_png_definition_and_cloned_instances() {
         let base = std::env::temp_dir().join(format!(
             "wonderdraft-svg-embedded-symbols-{}",
@@ -1023,6 +1100,14 @@ mod tests {
                             values: vec![0., 0., 0., 1.],
                         },
                     ]),
+                ),
+                ("outline_width", Value::Real(4.0)),
+                (
+                    "outline_color",
+                    Value::Vector {
+                        kind: "Color".into(),
+                        values: vec![0., 0., 0., 0.5],
+                    },
                 ),
             ])
         };
@@ -1075,6 +1160,17 @@ mod tests {
         assert_eq!(
             xml.matches("filter=\"url(#wonderdraft-symbol-color-filter-")
                 .count(),
+            2
+        );
+        assert_eq!(
+            xml.matches("<filter id=\"wonderdraft-symbol-outline-filter-")
+                .count(),
+            1
+        );
+        assert!(xml.contains("<feMorphology in=\"SourceAlpha\" operator=\"dilate\" radius=\"4\""));
+        assert!(xml.contains("flood-color=\"#000000\" flood-opacity=\"0.5\""));
+        assert_eq!(
+            xml.matches("<g id=\"wonderdraft-symbol-outline-").count(),
             2
         );
         assert!(!xml.contains("file://"));

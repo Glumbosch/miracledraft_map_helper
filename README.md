@@ -130,6 +130,12 @@ reusable SVG `<feColorMatrix>` filter. The source image's red, green, and blue
 channels select the first, second, and third Wonderdraft custom colors
 respectively. Source transparency and each custom color's alpha are retained.
 
+Symbol rotation uses Wonderdraft radians: positive values rotate clockwise and
+negative values rotate counter-clockwise in the SVG coordinate system. A
+symbol with `mirror: true` is flipped vertically before rotation. Records with
+a positive `outline_width` and valid `outline_color` receive a reusable SVG
+outline filter.
+
 ## Settings and generated data
 
 `wonderdraft_gui.config` stores the Wonderdraft, asset, cache, and completed
