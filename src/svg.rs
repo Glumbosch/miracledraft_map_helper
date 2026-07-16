@@ -267,6 +267,47 @@ fn png_data_uri(path: &Path) -> Result<String> {
     };
     Ok(format!("data:image/png;base64,{}", b64(&png, false)))
 }
+
+fn custom_color_matrix(record: &Value) -> Option<String> {
+    if n(record.get("custom_color_mode"), 0.0) == 0.0 {
+        return None;
+    }
+    let colors = record.get("custom_colors")?.as_array()?;
+    let mut channels = [[0.0; 4]; 3];
+    for (channel, color) in channels.iter_mut().zip(colors.iter().take(3)) {
+        let Value::Vector { kind, values } = color else {
+            return None;
+        };
+        if kind != "Color" || values.len() < 4 {
+            return None;
+        }
+        for (output, value) in channel.iter_mut().zip(values.iter().take(4)) {
+            let value = *value as f64;
+            if !value.is_finite() {
+                return None;
+            }
+            *output = value;
+        }
+    }
+    if colors.len() < 3 {
+        return None;
+    }
+    Some(format!(
+        "{} {} {} 0 0  {} {} {} 0 0  {} {} {} 0 0  {} {} {} 0 0",
+        channels[0][0],
+        channels[1][0],
+        channels[2][0],
+        channels[0][1],
+        channels[1][1],
+        channels[2][1],
+        channels[0][2],
+        channels[1][2],
+        channels[2][2],
+        channels[0][3],
+        channels[1][3],
+        channels[2][3]
+    ))
+}
 fn record(v: &Value) -> String {
     b64(godot_text::format(v).as_bytes(), true)
 }
@@ -369,6 +410,35 @@ pub fn export(
         xml.push_str("  </g>\n");
     }
     if options.symbols {
+        let mut custom_color_filters = HashMap::new();
+        if let Some(symbols) = root.get("symbols").and_then(Value::as_array) {
+            let mut definitions = String::new();
+            for record in symbols {
+                let texture = record.get("texture").and_then(Value::as_str).unwrap_or("");
+                if resolver.asset_info(texture).is_none() {
+                    continue;
+                }
+                let Some(matrix) = custom_color_matrix(record) else {
+                    continue;
+                };
+                if custom_color_filters.contains_key(&matrix) {
+                    continue;
+                }
+                let id = format!(
+                    "wonderdraft-symbol-color-filter-{}",
+                    custom_color_filters.len()
+                );
+                definitions.push_str(&format!(
+                    "    <filter id=\"{id}\" color-interpolation-filters=\"sRGB\">\n      <feColorMatrix type=\"matrix\" values=\"{matrix}\" result=\"wonderdraft-recolored\"/>\n      <feComposite in=\"wonderdraft-recolored\" in2=\"SourceGraphic\" operator=\"in\"/>\n    </filter>\n"
+                ));
+                custom_color_filters.insert(matrix, id);
+            }
+            if !definitions.is_empty() {
+                xml.push_str("  <defs id=\"wonderdraft-symbol-color-filters\">\n");
+                xml.push_str(&definitions);
+                xml.push_str("  </defs>\n");
+            }
+        }
         let mut embedded_symbols = HashMap::new();
         if options.embed_symbols
             && let Some(symbols) = root.get("symbols").and_then(Value::as_array)
@@ -431,8 +501,12 @@ pub fn export(
                     } else {
                         String::new()
                     };
+                    let filter_attr = custom_color_matrix(r)
+                        .and_then(|matrix| custom_color_filters.get(&matrix))
+                        .map(|id| format!(" filter=\"url(#{id})\""))
+                        .unwrap_or_default();
                     let common = format!(
-                        "id=\"wonderdraft-symbol-{i}\" x=\"{image_x}\" y=\"{image_y}\" width=\"{w}\" height=\"{h}\" opacity=\"{alpha}\" wd:kind=\"symbol\" wd:texture=\"{}\" wd:record=\"{}\" wd:source-width=\"{}\" wd:source-height=\"{}\" wd:base-radius=\"{}\" wd:offset-x=\"{}\" wd:offset-y=\"{}\" wd:export-width=\"{w}\" wd:export-height=\"{h}\"{transform_attr}",
+                        "id=\"wonderdraft-symbol-{i}\" x=\"{image_x}\" y=\"{image_y}\" width=\"{w}\" height=\"{h}\" opacity=\"{alpha}\" wd:kind=\"symbol\" wd:texture=\"{}\" wd:record=\"{}\" wd:source-width=\"{}\" wd:source-height=\"{}\" wd:base-radius=\"{}\" wd:offset-x=\"{}\" wd:offset-y=\"{}\" wd:export-width=\"{w}\" wd:export-height=\"{h}\"{transform_attr}{filter_attr}",
                         esc(texture),
                         record(r),
                         asset.width,
@@ -892,6 +966,7 @@ mod tests {
         assert!(!xml.contains("wonderdraft-labels"));
         assert!(!xml.contains("wonderdraft-paths"));
         assert!(!xml.contains("wonderdraft-mask-background"));
+        assert!(!xml.contains("feColorMatrix"));
         assert_eq!(summary.symbols, 1);
         assert_eq!(summary.labels, 0);
         let mut imported = root.clone();
@@ -930,6 +1005,24 @@ mod tests {
                         kind: "Vector2".into(),
                         values: vec![x, 50.],
                     },
+                ),
+                ("custom_color_mode", Value::Int(1)),
+                (
+                    "custom_colors",
+                    Value::Array(vec![
+                        Value::Vector {
+                            kind: "Color".into(),
+                            values: vec![1., 1., 0., 1.],
+                        },
+                        Value::Vector {
+                            kind: "Color".into(),
+                            values: vec![0., 0., 1., 1.],
+                        },
+                        Value::Vector {
+                            kind: "Color".into(),
+                            values: vec![0., 0., 0., 1.],
+                        },
+                    ]),
                 ),
             ])
         };
@@ -970,6 +1063,20 @@ mod tests {
             1
         );
         assert_eq!(xml.matches("<use ").count(), 2);
+        assert_eq!(
+            xml.matches("<filter id=\"wonderdraft-symbol-color-filter-")
+                .count(),
+            1
+        );
+        assert!(xml.contains("values=\"1 0 0 0 0  1 0 0 0 0  0 1 0 0 0  1 1 1 0 0\""));
+        assert!(xml.contains(
+            "<feComposite in=\"wonderdraft-recolored\" in2=\"SourceGraphic\" operator=\"in\"/>"
+        ));
+        assert_eq!(
+            xml.matches("filter=\"url(#wonderdraft-symbol-color-filter-")
+                .count(),
+            2
+        );
         assert!(!xml.contains("file://"));
         assert_eq!(summary.symbols, 2);
 
@@ -979,6 +1086,7 @@ mod tests {
         assert_eq!(imported_symbols.len(), 2);
         assert!(imported_symbols.iter().all(|symbol| {
             symbol.get("texture").and_then(Value::as_str) == Some("user://assets/shared")
+                && symbol.get("custom_color_mode").and_then(Value::as_f64) == Some(1.0)
         }));
         assert_eq!(imported_summary.symbols, 2);
         let _ = fs::remove_dir_all(base);

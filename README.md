@@ -125,6 +125,11 @@ base64 PNG definition for each distinct source symbol and places repeated
 instances as SVG `<use>` clones, making the SVG portable without duplicating
 the same image data.
 
+Symbols with enabled `custom_color_mode` and three `custom_colors` receive a
+reusable SVG `<feColorMatrix>` filter. The source image's red, green, and blue
+channels select the first, second, and third Wonderdraft custom colors
+respectively. Source transparency and each custom color's alpha are retained.
+
 ## Settings and generated data
 
 `wonderdraft_gui.config` stores the Wonderdraft, asset, cache, and completed
