@@ -52,6 +52,80 @@ record by hand.
 
 `id` and Inkscape-specific attributes are not required.
 
+## How `wd:record` is encoded
+
+`wd:record` is not encrypted, compressed, or a Wonderdraft binary variant. The
+exporter performs these steps:
+
+1. Formats the element's original Wonderdraft dictionary in the editor's
+   canonical Godot text syntax.
+2. Encodes that text as UTF-8 bytes.
+3. Encodes the bytes with the URL-safe Base64 alphabet: `A-Z`, `a-z`, `0-9`,
+   `-`, and `_`.
+4. Omits trailing `=` padding.
+
+In compact form:
+
+```text
+Wonderdraft record → Godot text → UTF-8 → URL-safe Base64 without padding
+```
+
+For example, decoded metadata looks like a normal Godot dictionary:
+
+```text
+{
+"color": Color( 1, 0, 0, 1 ),
+"points": "[ Vector2( 100, 100 ), Vector2( 300, 140 ) ]",
+"position": Vector2( 0, 0 ),
+"style": "res://textures/paths/path_dash",
+"width": 18.0
+}
+```
+
+The importer reverses the process: it Base64-decodes the attribute, requires
+valid UTF-8, and parses the result with the Godot-text parser. Invalid Base64,
+invalid UTF-8, or invalid Godot text makes the SVG import fail rather than
+silently accepting a damaged record.
+
+The decoder accepts both URL-safe `-`/`_` and standard `+`/`/` Base64
+characters, with or without `=` padding. The exporter always writes the
+unpadded URL-safe form.
+
+### Decode a record with Python
+
+Replace the sample value with the complete contents of the SVG attribute:
+
+```python
+import base64
+
+encoded = "PASTE_WD_RECORD_HERE"
+padded = encoded + "=" * (-len(encoded) % 4)
+godot_text = base64.urlsafe_b64decode(padded).decode("utf-8")
+print(godot_text)
+```
+
+### Encode a record with Python
+
+The text must be a complete, valid Godot dictionary:
+
+```python
+import base64
+
+godot_text = '''{
+"color": Color( 1, 0, 0, 1 ),
+"width": 18.0
+}'''
+
+encoded = base64.urlsafe_b64encode(godot_text.encode("utf-8"))
+wd_record = encoded.rstrip(b"=").decode("ascii")
+print(wd_record)
+```
+
+Manually re-encoded text does not have to use identical whitespace, but it must
+parse as a dictionary using the supported Godot syntax. Editing visible SVG
+properties is safer: the importer updates supported fields while retaining all
+other fields from `wd:record`.
+
 ## Roads and paths
 
 A road/path should remain a `<path>` with:

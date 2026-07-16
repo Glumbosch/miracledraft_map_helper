@@ -9,7 +9,9 @@ xmlns:wd="urn:wonderdraft-map-editor"
 Important attributes include:
 
 - `wd:kind="background|label|symbol|path|territory"`
-- `wd:record="..."` — URL-safe Base64 containing the original Godot text record.
+- `wd:record="..."` — canonical Godot text encoded as UTF-8 and then unpadded
+  URL-safe Base64. It is not compressed or encrypted. Export uses `-` and `_`;
+  import also accepts standard Base64 `+` and `/` plus optional `=` padding.
 - `wd:texture="user://assets/..."`, `res://sprites/...`, or `res://packs/...`
 - `wd:export-width` and `wd:export-height` — rendered dimensions used to infer resizing on import.
 - `wd:points-slot` and `wd:points-type` — location/type of a path's point collection.
