@@ -31,9 +31,11 @@ struct App {
     compressed: bool,
     verify: bool,
     embed_bg: bool,
+    embed_boxes: bool,
     embed_symbols: bool,
     export_territories: bool,
     export_background: bool,
+    export_boxes: bool,
     export_paths: bool,
     export_symbols: bool,
     export_labels: bool,
@@ -132,9 +134,11 @@ impl Default for App {
             compressed: true,
             verify: true,
             embed_bg: false,
+            embed_boxes: false,
             embed_symbols: false,
             export_territories: true,
             export_background: true,
+            export_boxes: true,
             export_paths: true,
             export_symbols: true,
             export_labels: true,
@@ -1112,11 +1116,13 @@ impl App {
         let root = self.parse()?;
         let options = svg::ExportOptions {
             background: self.export_background,
+            boxes: self.export_boxes,
             paths: self.export_paths,
             symbols: self.export_symbols,
             labels: self.export_labels,
             territories: self.export_territories,
             embed_background: self.embed_bg,
+            embed_boxes: self.embed_boxes,
             embed_symbols: self.embed_symbols,
         };
         let s = svg::export(
@@ -1127,8 +1133,8 @@ impl App {
             options,
         )?;
         self.status = format!(
-            "Exported SVG: {} labels, {} symbols, {} paths, {} territories",
-            s.labels, s.symbols, s.paths, s.territories
+            "Exported SVG: {} boxes, {} labels, {} symbols, {} paths, {} territories",
+            s.boxes, s.labels, s.symbols, s.paths, s.territories
         );
         dialog(
             "SVG exported",
@@ -1329,6 +1335,7 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.compressed, "Compress saved map");
                 ui.checkbox(&mut self.verify, "Verify save");
                 ui.checkbox(&mut self.embed_bg, "Embed mask in SVG");
+                ui.checkbox(&mut self.embed_boxes, "Embed boxes in SVG");
                 ui.checkbox(&mut self.embed_symbols, "Embed symbols in SVG");
             });
             ui.label(format!(
@@ -1353,6 +1360,7 @@ impl eframe::App for App {
             ui.horizontal_wrapped(|ui| {
                 ui.label("SVG export layers:");
                 ui.checkbox(&mut self.export_background, "Background mask");
+                ui.checkbox(&mut self.export_boxes, "Boxes");
                 ui.checkbox(&mut self.export_paths, "Roads / paths");
                 ui.checkbox(&mut self.export_symbols, "Symbols");
                 ui.checkbox(&mut self.export_labels, "Labels");
@@ -1715,6 +1723,7 @@ fn configured_directory(value: &str) -> bool {
 }
 
 const MAP_SECTIONS: &[(&str, &str)] = &[
+    ("Boxes", "\"boxes\": ["),
     ("Symbols", "\"symbols\": ["),
     ("Paths / roads", "\"paths\": ["),
     ("Labels", "\"labels\": ["),

@@ -20,6 +20,7 @@ matching `id` and `inkscape:label`, plus
 - `wonderdraft-territories`
 - `wonderdraft-symbols`
 - `wonderdraft-labels`
+- `wonderdraft-boxes`
 - `wonderdraft-mask-background`
 
 An untagged element is imported when its type matches its recognized layer:

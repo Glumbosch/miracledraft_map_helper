@@ -1,7 +1,7 @@
 # SVG Round Trip
 
-The SVG workflow is designed for editing Wonderdraft roads, paths, symbols,
-labels, and territories in applications such as Inkscape.
+The SVG workflow is designed for viewing Wonderdraft boxes and editing roads,
+paths, symbols, labels, and territories in applications such as Inkscape.
 
 For the exact group and attribute rules used by the importer, see
 [Editing SVG for Import](Editing-SVG-for-Import).
@@ -10,8 +10,8 @@ For the exact group and attribute rules used by the importer, see
 
 1. Open a `.wonderdraft_map` and keep an untouched backup.
 2. Enable only the layers you need under **SVG export layers**.
-3. Enable **Embed mask in SVG** and/or **Embed symbols in SVG** if the SVG must
-   be portable to another folder or computer.
+3. Enable **Embed mask in SVG**, **Embed boxes in SVG**, and/or **Embed symbols
+   in SVG** if the SVG must be portable to another folder or computer.
 4. Click **Export SVG…**.
 5. Edit the SVG while preserving `wd:*` metadata attributes.
 6. Click **Import SVG…** and choose the edited SVG.
@@ -39,6 +39,11 @@ Saved map after importing the SVG:
 - `wd:*` attributes retain the original Wonderdraft records. Supported
   untagged elements are also imported when placed in the matching Wonderdraft
   layer.
+- Boxes export to the `wonderdraft-boxes` layer as embedded or linked PNG
+  images stretched to their `margin_left`, `margin_top`, `margin_right`, and
+  `margin_bottom` rectangle. Nine-patch cropping and border reconstruction are
+  intentionally not applied. Box SVG geometry is export-only; edit box records
+  through the map-data **Boxes** jump section.
 - Roads and territory areas export as SVG `<path>` elements for convenient node
   editing. Edited path endpoints become Wonderdraft point lists on import.
 - Wonderdraft road styles are represented with SVG strokes, dash arrays,

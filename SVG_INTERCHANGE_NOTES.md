@@ -8,7 +8,7 @@ xmlns:wd="urn:wonderdraft-map-editor"
 
 Important attributes include:
 
-- `wd:kind="background|label|symbol|path|territory"`
+- `wd:kind="background|box|label|symbol|path|territory"`
 - `wd:record="..."` — canonical Godot text encoded as UTF-8 and then unpadded
   URL-safe Base64. It is not compressed or encrypted. Export uses `-` and `_`;
   import also accepts standard Base64 `+` and `/` plus optional `=` padding.
@@ -20,6 +20,13 @@ The background mask can be embedded as a PNG data URI. Symbol images can be
 referenced as file URIs, or embedded once as PNG data definitions and placed as
 `<use>` clones. The importer maps either representation back to Wonderdraft
 asset paths and records.
+
+Box textures come from embedded image keys such as
+`boxes.0.properties.texture.properties.image`. SVG export places them in the
+`wonderdraft-boxes` Inkscape layer and stretches each image to the rectangle
+defined by its four margins. Depending on **Embed boxes in SVG**, each texture
+is either a PNG data URI or a linked `.box-N.png` companion file. Nine-patch
+cropping and border reconstruction are intentionally omitted.
 
 The importer understands SVG view boxes, common physical units, nested transforms, Inkscape layer translations, text/tspan content, CSS-style attributes, and common path commands. Cubic and quadratic curves are flattened to point sequences when an arbitrary SVG path is imported.
 ## Custom-color symbols

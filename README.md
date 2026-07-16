@@ -221,7 +221,7 @@ fonts remain in `wonderdraft_files/fonts/` even after they are installed.
 - Open a map with **Open map**, **Open recent**, or drag and drop.
 - Validate or edit the complete Godot text representation.
 - Press **Ctrl+F** to find text, or use the right-panel section dropdown to jump
-  to symbols, roads/paths, labels, territories, or theme data.
+  to boxes, symbols, roads/paths, labels, territories, or theme data.
 - Export the currently displayed Godot text to a `.txt` file with **Export map
   data…**.
 - Remove stale symbols whose complete scaled, offset, rotated, mirrored, and
@@ -229,7 +229,8 @@ fonts remain in `wonderdraft_files/fonts/` even after they are installed.
 - Save a compressed or literal-only map and optionally verify it by decoding it
   again.
 - Export or replace embedded `ground`, `mask`, and `water_tint` images.
-- Export the background, roads/paths, symbols, labels, and territories to SVG.
+- Export the background, boxes, roads/paths, symbols, labels, and territories
+  to SVG.
 - Import edited SVG elements into the open map, then save the result as a new
   `.wonderdraft_map` file.
 
@@ -245,12 +246,15 @@ elements. These attributes retain the original Wonderdraft records while the
 visible SVG properties are edited. Untagged SVG content is converted on a
 best-effort basis because Wonderdraft record formats can differ by version.
 
-The layer checkboxes control whether the background mask, roads/paths, symbols,
-and labels are included. **Embed mask in SVG** stores the mask as a data URI;
-otherwise the SVG refers to an external PNG. **Embed symbols in SVG** writes one
-base64 PNG definition for each distinct source symbol and places repeated
-instances as SVG `<use>` clones, making the SVG portable without duplicating
-the same image data.
+The layer checkboxes control whether the background mask, boxes, roads/paths,
+symbols, labels, and territories are included. **Embed mask in SVG** stores the
+mask as a data URI; otherwise the SVG refers to an external PNG. **Embed boxes
+in SVG** stores each embedded box texture as a data URI; otherwise the SVG
+links a companion `.box-N.png` file. Box textures are stretched to their map
+margin rectangles without reproducing Wonderdraft's nine-patch borders.
+**Embed symbols in SVG** writes one base64 PNG definition for each distinct
+source symbol and places repeated instances as SVG `<use>` clones, making the
+SVG portable without duplicating the same image data.
 
 Symbols with enabled `custom_color_mode` and three `custom_colors` receive a
 reusable SVG `<feColorMatrix>` filter. The source image's red, green, and blue

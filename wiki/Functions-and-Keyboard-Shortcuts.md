@@ -36,10 +36,11 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Compress saved map** | Uses normal GCPF compression. Disable it to write literal-only data, which is larger but can aid low-level inspection. |
 | **Verify save** | Decodes the newly written map again and checks that its root is a Godot dictionary. Keep this enabled for normal work. |
 | **Embed mask in SVG** | Stores the background mask inside the SVG as a data URI. When disabled, the SVG refers to an external PNG. |
+| **Embed boxes in SVG** | Stores each exported box texture inside the SVG as a data URI. When disabled, the SVG links a companion `.box-N.png` file. |
 | **Embed symbols in SVG** | Embeds each distinct source symbol once and reuses it with SVG `<use>` elements, making the SVG portable without duplicating image data. |
 
 The **SVG export layers** checkboxes independently include or exclude the
-background mask, roads/paths, symbols, labels, and territories. Included
+background mask, boxes, roads/paths, symbols, labels, and territories. Included
 groups are written as named Inkscape layers. The importer can infer newly
 created, untagged elements from these layer names when their SVG element type
 matches the layer.
@@ -51,9 +52,9 @@ can edit values directly, then use **Validate text** before exporting or saving.
 
 - **Find next** performs the same action as `Enter` in the Find field.
 - **Close** performs the same action as `Esc` while Find is open.
-- **Jump to section** locates and selects the first marker for **Symbols**,
-  **Roads / paths**, **Labels**, **Territories**, or **Theme**. If a section is
-  absent, the status line reports it.
+- **Jump to section** locates and selects the first marker for **Boxes**,
+  **Symbols**, **Roads / paths**, **Labels**, **Territories**, or **Theme**. If
+  a section is absent, the status line reports it.
 - **Remove off-canvas symbols** deletes only symbols whose complete transformed
   bounds are outside the map. The calculation includes scale, offset, rotation,
   mirroring, and outline width. It changes the text in memory; use **Save map

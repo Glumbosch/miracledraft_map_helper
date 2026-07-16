@@ -15,6 +15,7 @@ use std::{
 const WD: &str = "urn:wonderdraft-map-editor";
 #[derive(Clone, Debug, Default)]
 pub struct Summary {
+    pub boxes: usize,
     pub labels: usize,
     pub symbols: usize,
     pub paths: usize,
@@ -27,11 +28,13 @@ pub struct Summary {
 #[derive(Clone, Copy, Debug)]
 pub struct ExportOptions {
     pub background: bool,
+    pub boxes: bool,
     pub paths: bool,
     pub symbols: bool,
     pub labels: bool,
     pub territories: bool,
     pub embed_background: bool,
+    pub embed_boxes: bool,
     pub embed_symbols: bool,
 }
 
@@ -39,11 +42,13 @@ impl Default for ExportOptions {
     fn default() -> Self {
         Self {
             background: true,
+            boxes: true,
             paths: true,
             symbols: true,
             labels: true,
             territories: true,
             embed_background: false,
+            embed_boxes: false,
             embed_symbols: false,
         }
     }
@@ -155,6 +160,14 @@ fn esc(s: &str) -> String {
 }
 fn n(v: Option<&Value>, default: f64) -> f64 {
     v.and_then(Value::as_f64).unwrap_or(default)
+}
+fn property<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object { properties, .. } => properties
+            .iter()
+            .find_map(|(key, value)| (key == name).then_some(value)),
+        _ => value.get(name),
+    }
 }
 fn vec2(v: Option<&Value>, default: (f64, f64)) -> (f64, f64) {
     match v {
@@ -546,6 +559,73 @@ pub fn export(
         xml.push_str("  </g>\n");
     } else {
         summary.background = "excluded".into();
+    }
+    if options.boxes {
+        xml.push_str(&layer_open("wonderdraft-boxes"));
+        if let Some(boxes) = root.get("boxes").and_then(Value::as_array) {
+            for (index, box_record) in boxes.iter().enumerate() {
+                if matches!(property(box_record, "visible"), Some(Value::Bool(false))) {
+                    continue;
+                }
+                let left = n(property(box_record, "margin_left"), 0.0);
+                let top = n(property(box_record, "margin_top"), 0.0);
+                let right = n(property(box_record, "margin_right"), left);
+                let bottom = n(property(box_record, "margin_bottom"), top);
+                let box_width = (right - left).abs();
+                let box_height = (bottom - top).abs();
+                if box_width <= 0.0 || box_height <= 0.0 {
+                    summary.warnings.push(format!(
+                        "Skipped box {index}: its margin rectangle has no area"
+                    ));
+                    continue;
+                }
+                let image_key = format!("boxes.{index}.properties.texture.properties.image");
+                let Some((_, image)) = imageset.iter().find(|(key, _)| key == &image_key) else {
+                    summary
+                        .warnings
+                        .push(format!("Skipped box {index}: embedded image is missing"));
+                    continue;
+                };
+                let Some(info) = crate::value::image_info(image) else {
+                    summary
+                        .warnings
+                        .push(format!("Skipped box {index}: embedded image is invalid"));
+                    continue;
+                };
+                let png_path = dest.with_file_name(format!(
+                    "{}.box-{index}.png",
+                    dest.file_stem().unwrap_or_default().to_string_lossy()
+                ));
+                images::export_png(&png_path, &info)?;
+                let href = if options.embed_boxes {
+                    let raw = fs::read(&png_path).map_err(|error| {
+                        Error::format(format!(
+                            "could not read exported box image {}: {error}",
+                            png_path.display()
+                        ))
+                    })?;
+                    let _ = fs::remove_file(&png_path);
+                    format!("data:image/png;base64,{}", b64(&raw, false))
+                } else {
+                    png_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                let opacity = color(property(box_record, "modulate"), [1.0, 1.0, 1.0, 1.0]).1
+                    * color(property(box_record, "self_modulate"), [1.0, 1.0, 1.0, 1.0]).1;
+                xml.push_str(&format!(
+                    "    <image id=\"wonderdraft-box-{index}\" x=\"{}\" y=\"{}\" width=\"{box_width}\" height=\"{box_height}\" preserveAspectRatio=\"none\" opacity=\"{opacity}\" xlink:href=\"{}\" wd:kind=\"box\" wd:image-key=\"{image_key}\" wd:record=\"{}\"/>\n",
+                    left.min(right),
+                    top.min(bottom),
+                    esc(&href),
+                    record(box_record)
+                ));
+                summary.boxes += 1;
+            }
+        }
+        xml.push_str("  </g>\n");
     }
     if options.paths {
         xml.push_str(&layer_open("wonderdraft-paths"));
@@ -1077,6 +1157,7 @@ fn known_layer(value: &str) -> bool {
             | "wonderdraft-symbols"
             | "wonderdraft-paths"
             | "wonderdraft-territories"
+            | "wonderdraft-boxes"
             | "wonderdraft-mask-background"
     )
 }
@@ -1756,11 +1837,13 @@ mod tests {
             &resolver,
             ExportOptions {
                 background: false,
+                boxes: false,
                 paths: false,
                 symbols: true,
                 labels: false,
                 territories: false,
                 embed_background: false,
+                embed_boxes: false,
                 embed_symbols: false,
             },
         )
@@ -1792,6 +1875,104 @@ mod tests {
             Some(Value::Bool(true))
         ));
         assert_eq!(imported_summary.symbols, 1);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn boxes_export_as_linked_or_embedded_stretched_images() {
+        let base =
+            std::env::temp_dir().join(format!("wonderdraft-svg-boxes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let box_record = Value::Object {
+            class: "NinePatchRect".into(),
+            properties: vec![
+                ("margin_left".into(), Value::Real(10.0)),
+                ("margin_top".into(), Value::Real(20.0)),
+                ("margin_right".into(), Value::Real(310.0)),
+                ("margin_bottom".into(), Value::Real(120.0)),
+                ("visible".into(), Value::Bool(true)),
+                (
+                    "modulate".into(),
+                    Value::Vector {
+                        kind: "Color".into(),
+                        values: vec![1.0, 1.0, 1.0, 0.5],
+                    },
+                ),
+            ],
+        };
+        let image = Value::Object {
+            class: "Image".into(),
+            properties: vec![(
+                "data".into(),
+                dict(vec![
+                    ("width", Value::Int(2)),
+                    ("height", Value::Int(2)),
+                    ("format", Value::String("RGBA8".into())),
+                    ("mipmaps", Value::Bool(false)),
+                    (
+                        "data",
+                        Value::PoolByteArray(crate::ByteSource::Memory(vec![255; 16])),
+                    ),
+                ]),
+            )],
+        };
+        let root = dict(vec![
+            ("map_width", Value::Int(512)),
+            ("map_height", Value::Int(512)),
+            ("boxes", Value::Array(vec![box_record])),
+        ]);
+        let images = vec![("boxes.0.properties.texture.properties.image".into(), image)];
+        let linked_svg = base.join("linked.svg");
+        let linked = export(
+            &root,
+            &images,
+            &linked_svg,
+            &Resolver::new(&Settings::default()),
+            ExportOptions {
+                background: false,
+                boxes: true,
+                paths: false,
+                symbols: false,
+                labels: false,
+                territories: false,
+                embed_background: false,
+                embed_boxes: false,
+                embed_symbols: false,
+            },
+        )
+        .unwrap();
+        let xml = fs::read_to_string(&linked_svg).unwrap();
+        assert_eq!(linked.boxes, 1);
+        assert!(xml.contains("inkscape:label=\"wonderdraft-boxes\""));
+        assert!(xml.contains("x=\"10\" y=\"20\" width=\"300\" height=\"100\""));
+        assert!(xml.contains("preserveAspectRatio=\"none\" opacity=\"0.5\""));
+        assert!(xml.contains("xlink:href=\"linked.box-0.png\""));
+        assert!(base.join("linked.box-0.png").is_file());
+
+        let embedded_svg = base.join("embedded.svg");
+        let embedded = export(
+            &root,
+            &images,
+            &embedded_svg,
+            &Resolver::new(&Settings::default()),
+            ExportOptions {
+                background: false,
+                boxes: true,
+                paths: false,
+                symbols: false,
+                labels: false,
+                territories: false,
+                embed_background: false,
+                embed_boxes: true,
+                embed_symbols: false,
+            },
+        )
+        .unwrap();
+        let xml = fs::read_to_string(&embedded_svg).unwrap();
+        assert_eq!(embedded.boxes, 1);
+        assert!(xml.contains("xlink:href=\"data:image/png;base64,"));
+        assert!(!base.join("embedded.box-0.png").exists());
         let _ = fs::remove_dir_all(base);
     }
 
@@ -1888,11 +2069,13 @@ mod tests {
             &resolver,
             ExportOptions {
                 background: false,
+                boxes: false,
                 paths: false,
                 symbols: true,
                 labels: false,
                 territories: false,
                 embed_background: false,
+                embed_boxes: false,
                 embed_symbols: true,
             },
         )
@@ -2005,11 +2188,13 @@ mod tests {
             &resolver,
             ExportOptions {
                 background: false,
+                boxes: false,
                 paths: false,
                 symbols: false,
                 labels: false,
                 territories: true,
                 embed_background: false,
+                embed_boxes: false,
                 embed_symbols: false,
             },
         )
@@ -2127,11 +2312,13 @@ mod tests {
             &resolver,
             ExportOptions {
                 background: false,
+                boxes: false,
                 paths: true,
                 symbols: false,
                 labels: false,
                 territories: true,
                 embed_background: false,
+                embed_boxes: false,
                 embed_symbols: false,
             },
         )
@@ -2264,11 +2451,13 @@ mod tests {
             &Resolver::new(&Settings::default()),
             ExportOptions {
                 background: false,
+                boxes: false,
                 paths: true,
                 symbols: false,
                 labels: false,
                 territories: false,
                 embed_background: false,
+                embed_boxes: false,
                 embed_symbols: false,
             },
         )
@@ -2396,11 +2585,13 @@ mod tests {
             &Resolver::new(&Settings::default()),
             ExportOptions {
                 background: false,
+                boxes: false,
                 paths: false,
                 symbols: false,
                 labels: true,
                 territories: false,
                 embed_background: false,
+                embed_boxes: false,
                 embed_symbols: false,
             },
         )
