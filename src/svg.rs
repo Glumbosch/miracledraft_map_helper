@@ -313,7 +313,11 @@ fn custom_color_matrix(record: &Value) -> Option<String> {
 }
 
 fn outline_style(record: &Value) -> Option<(String, f64, String, f64)> {
-    let width = n(record.get("outline_width"), 0.0);
+    let width = record
+        .get("outline_width")
+        .or_else(|| record.get("outline_size"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     if !width.is_finite() || width <= 0.0 {
         return None;
     }
@@ -383,6 +387,113 @@ fn svg_path_data(points: &[(f64, f64)], position: (f64, f64), closed: bool) -> S
     data
 }
 
+fn layer_open(id: &str) -> String {
+    format!("  <g inkscape:groupmode=\"layer\" inkscape:label=\"{id}\" id=\"{id}\">\n")
+}
+
+fn positioned_points(points: &[(f64, f64)], position: (f64, f64)) -> Vec<(f64, f64)> {
+    points
+        .iter()
+        .map(|(x, y)| (x + position.0, y + position.1))
+        .collect()
+}
+
+fn polygon_data(points: &[(f64, f64)]) -> String {
+    svg_path_data(points, (0.0, 0.0), true)
+}
+
+fn local_point(origin: (f64, f64), tangent: (f64, f64), along: f64, across: f64) -> (f64, f64) {
+    (
+        origin.0 + tangent.0 * along - tangent.1 * across,
+        origin.1 + tangent.1 * along + tangent.0 * across,
+    )
+}
+
+fn path_pattern_data(points: &[(f64, f64)], width_units: f64, style: &str) -> String {
+    let scale = width_units.max(0.0);
+    if scale == 0.0 {
+        return String::new();
+    }
+    let mut data = String::new();
+    for segment in points.windows(2) {
+        let start = segment[0];
+        let dx = segment[1].0 - start.0;
+        let dy = segment[1].1 - start.1;
+        let length = dx.hypot(dy);
+        if length <= f64::EPSILON {
+            continue;
+        }
+        let tangent = (dx / length, dy / length);
+        if style.ends_with("path_directional") {
+            // The source chevron is 50 px high. Wonderdraft width is a scale
+            // factor for patterned paths, rather than an SVG stroke width.
+            let pattern_height = 50.0 * scale;
+            let pattern_length = 65.0 * scale;
+            let repeat = 63.0 * scale;
+            let mut offset = 0.0;
+            while offset < length {
+                let available = (length - offset).min(pattern_length);
+                if available >= pattern_length * 0.45 {
+                    let half = pattern_height / 2.0;
+                    let notch = 17.0 * scale;
+                    let points = [
+                        local_point(start, tangent, offset, -half),
+                        local_point(start, tangent, offset + available - notch, -half),
+                        local_point(start, tangent, offset + available, 0.0),
+                        local_point(start, tangent, offset + available - notch, half),
+                        local_point(start, tangent, offset, half),
+                        local_point(start, tangent, offset + notch, 0.0),
+                    ];
+                    data.push_str(&polygon_data(&points));
+                    data.push(' ');
+                }
+                offset += repeat;
+            }
+        } else if style.ends_with("path_double_paired") {
+            let pattern_height = 50.0 * scale;
+            let strip = (pattern_height * 0.18).max(0.1);
+            let gap = pattern_height * 0.24;
+            for center in [-gap, gap] {
+                let points = [
+                    local_point(start, tangent, 0.0, center - strip / 2.0),
+                    local_point(start, tangent, length, center - strip / 2.0),
+                    local_point(start, tangent, length, center + strip / 2.0),
+                    local_point(start, tangent, 0.0, center + strip / 2.0),
+                ];
+                data.push_str(&polygon_data(&points));
+                data.push(' ');
+            }
+        } else if style.ends_with("path_hash_marks") {
+            let pattern_height = 100.0 * scale;
+            let mark_width = (pattern_height * 0.08).max(0.1);
+            let repeat = pattern_height * 2.3;
+            let mut offset = 0.0;
+            while offset < length {
+                for (along, height) in [
+                    (offset, pattern_height),
+                    (offset + repeat * 0.52, pattern_height * 0.36),
+                ] {
+                    if along >= length {
+                        continue;
+                    }
+                    let half_w = mark_width / 2.0;
+                    let half_h = height / 2.0;
+                    let points = [
+                        local_point(start, tangent, along - half_w, -half_h),
+                        local_point(start, tangent, along + half_w, -half_h),
+                        local_point(start, tangent, along + half_w, half_h),
+                        local_point(start, tangent, along - half_w, half_h),
+                    ];
+                    data.push_str(&polygon_data(&points));
+                    data.push(' ');
+                }
+                offset += repeat;
+            }
+        }
+    }
+    data.trim_end().to_owned()
+}
+
 fn label_glow(record: &Value) -> Option<(String, f64, String, f64)> {
     let size = n(record.get("glow_size"), 0.0);
     if !size.is_finite() || size <= 0.0 {
@@ -407,7 +518,7 @@ pub fn export(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" xmlns:wd=\"{WD}\" width=\"{width}px\" height=\"{height}px\" viewBox=\"0 0 {width} {height}\" wd:format-version=\"2\" wd:map-width=\"{width}\" wd:map-height=\"{height}\">\n  <metadata>Wonderdraft Map Editor SVG interchange file</metadata>\n"
     );
     if options.background {
-        xml.push_str("  <g id=\"wonderdraft-mask-background\">\n");
+        xml.push_str(&layer_open("wonderdraft-mask-background"));
         if let Some((_, mask)) = imageset
             .iter()
             .find(|(k, _)| k.split('.').next_back() == Some("mask"))
@@ -437,7 +548,7 @@ pub fn export(
         summary.background = "excluded".into();
     }
     if options.paths {
-        xml.push_str("  <g id=\"wonderdraft-paths\">\n");
+        xml.push_str(&layer_open("wonderdraft-paths"));
         if let Some(a) = root.get("paths").and_then(Value::as_array) {
             for (i, r) in a.iter().enumerate() {
                 let Some(p) = points(r) else { continue };
@@ -446,9 +557,59 @@ pub fn export(
                 }
                 let pos = vec2(r.get("position"), (0., 0.));
                 let (c, op) = color(r.get("color"), [0.2, 0.1, 0.05, 1.]);
-                let width = n(r.get("width"), 3.);
+                let width = n(r.get("width"), 3.).max(0.0);
+                let style = r.get("style").and_then(Value::as_str).unwrap_or("");
                 let data = svg_path_data(&p, pos, false);
-                xml.push_str(&format!("    <path id=\"wonderdraft-path-{i}\" d=\"{data}\" fill=\"none\" stroke=\"{c}\" stroke-opacity=\"{op}\" stroke-width=\"{width}\" wd:kind=\"path\" wd:record=\"{}\"/>\n",record(r)));
+                let metadata = format!(
+                    "id=\"wonderdraft-path-{i}\" d=\"{data}\" wd:kind=\"path\" wd:style=\"{}\" wd:record=\"{}\"",
+                    esc(style),
+                    record(r)
+                );
+                if matches!(
+                    style.rsplit('/').next(),
+                    Some("path_directional" | "path_double_paired" | "path_hash_marks")
+                ) {
+                    let visual = path_pattern_data(&positioned_points(&p, pos), width, style);
+                    xml.push_str(&format!(
+                        "    <path {metadata} fill=\"none\" stroke=\"none\"/>\n    <path d=\"{visual}\" fill=\"{c}\" fill-opacity=\"{op}\" stroke=\"none\" wd:role=\"path-style\"/>\n"
+                    ));
+                } else if style.ends_with("path_solid_outlined") {
+                    xml.push_str(&format!(
+                        "    <path d=\"{data}\" fill=\"none\" stroke=\"#000000\" stroke-opacity=\"{op}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" wd:role=\"path-style\"/>\n    <path {metadata} fill=\"none\" stroke=\"{c}\" stroke-opacity=\"{op}\" stroke-width=\"{width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n",
+                        width * 1.5
+                    ));
+                } else {
+                    let extra = if style.ends_with("path_circle") {
+                        format!(
+                            " stroke-linecap=\"round\" stroke-dasharray=\"0 {}\"",
+                            width * 2.0
+                        )
+                    } else if style.ends_with("path_dash_dot_dot") {
+                        format!(
+                            " stroke-linecap=\"round\" stroke-dasharray=\"{} {} {} {} {} {}\"",
+                            width * 1.5,
+                            width * 1.5,
+                            width * 0.01,
+                            width * 1.5,
+                            width * 0.01,
+                            width * 1.5
+                        )
+                    } else if style.ends_with("path_dash_dot") {
+                        format!(
+                            " stroke-linecap=\"round\" stroke-dasharray=\"{width} {} {} {}\"",
+                            width * 2.0,
+                            width * 0.01,
+                            width * 2.0
+                        )
+                    } else if style.ends_with("path_dash") {
+                        format!(" stroke-dasharray=\"{} {}\"", width * 2.0, width * 2.0)
+                    } else {
+                        String::new()
+                    };
+                    xml.push_str(&format!(
+                        "    <path {metadata} fill=\"none\" stroke=\"{c}\" stroke-opacity=\"{op}\" stroke-width=\"{width}\"{extra}/>\n"
+                    ));
+                }
                 summary.paths += 1;
             }
         }
@@ -471,7 +632,7 @@ pub fn export(
                 "  <defs id=\"wonderdraft-territory-filters\">\n    <filter id=\"wonderdraft-territory-gradient-blur\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\" color-interpolation-filters=\"sRGB\">\n      <feGaussianBlur stdDeviation=\"10\"/>\n    </filter>\n  </defs>\n",
             );
         }
-        xml.push_str("  <g id=\"wonderdraft-territories\">\n");
+        xml.push_str(&layer_open("wonderdraft-territories"));
         if let Some(territories) = territories {
             for (index, territory) in territories.iter().enumerate() {
                 let Some(points) = points(territory) else {
@@ -610,7 +771,7 @@ pub fn export(
                 xml.push_str("  </defs>\n");
             }
         }
-        xml.push_str("  <g id=\"wonderdraft-symbols\">\n");
+        xml.push_str(&layer_open("wonderdraft-symbols"));
         if let Some(a) = root.get("symbols").and_then(Value::as_array) {
             for (i, r) in a.iter().enumerate() {
                 let texture = r.get("texture").and_then(Value::as_str).unwrap_or("");
@@ -719,7 +880,7 @@ pub fn export(
                 xml.push_str("  </defs>\n");
             }
         }
-        xml.push_str("  <g id=\"wonderdraft-labels\">\n");
+        xml.push_str(&layer_open("wonderdraft-labels"));
         if let Some(a) = root.get("labels").and_then(Value::as_array) {
             for (i, r) in a.iter().enumerate() {
                 let (x, y) = vec2(r.get("position"), (0., 0.));
@@ -797,6 +958,7 @@ struct El {
     attrs: Vec<(String, String)>,
     text: String,
     matrix: Matrix,
+    layer: Option<String>,
 }
 impl Default for El {
     fn default() -> Self {
@@ -805,6 +967,7 @@ impl Default for El {
             attrs: Vec::new(),
             text: String::new(),
             matrix: IDENTITY,
+            layer: None,
         }
     }
 }
@@ -907,7 +1070,22 @@ fn f(e: &El, name: &str, d: f64) -> f64 {
         .and_then(|v| v.trim_end_matches("px").parse().ok())
         .unwrap_or(d)
 }
-fn element_from(event: &quick_xml::events::BytesStart<'_>, parent: Matrix) -> El {
+fn known_layer(value: &str) -> bool {
+    matches!(
+        value,
+        "wonderdraft-labels"
+            | "wonderdraft-symbols"
+            | "wonderdraft-paths"
+            | "wonderdraft-territories"
+            | "wonderdraft-mask-background"
+    )
+}
+
+fn element_from(
+    event: &quick_xml::events::BytesStart<'_>,
+    parent: Matrix,
+    parent_layer: Option<&str>,
+) -> El {
     let mut element = El {
         tag: String::from_utf8_lossy(event.local_name().as_ref()).into_owned(),
         ..Default::default()
@@ -919,7 +1097,81 @@ fn element_from(event: &quick_xml::events::BytesStart<'_>, parent: Matrix) -> El
         ));
     }
     element.matrix = mat_mul(parent, parse_transform(attr(&element, "transform")));
+    let layer = [attr(&element, "label"), attr(&element, "id")]
+        .into_iter()
+        .flatten()
+        .find(|value| known_layer(value))
+        .map(str::to_owned)
+        .or_else(|| parent_layer.map(str::to_owned));
+    element.layer = layer;
     element
+}
+
+fn inferred_kind(element: &El) -> Option<&'static str> {
+    if attr(element, "role").is_some() {
+        return None;
+    }
+    match (element.layer.as_deref(), element.tag.as_str()) {
+        (Some("wonderdraft-labels"), "text") => Some("label"),
+        (Some("wonderdraft-symbols"), "image" | "use" | "circle") => Some("symbol"),
+        (Some("wonderdraft-paths"), "path" | "polyline") => Some("path"),
+        (Some("wonderdraft-territories"), "path" | "polygon") => Some("territory"),
+        _ => None,
+    }
+}
+
+fn theme_color(value: Option<&Value>) -> Option<Value> {
+    match value {
+        Some(Value::Vector { kind, values }) if kind == "Color" && values.len() >= 4 => {
+            Some(Value::Vector {
+                kind: "Color".into(),
+                values: values.clone(),
+            })
+        }
+        Some(Value::String(value)) => {
+            let values = value
+                .split(',')
+                .filter_map(|part| part.trim().parse::<f32>().ok())
+                .collect::<Vec<_>>();
+            (values.len() >= 4).then(|| Value::Vector {
+                kind: "Color".into(),
+                values,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn town_label_record(root: &Value) -> Value {
+    let preset = root
+        .get("theme")
+        .and_then(|theme| theme.get("label_presets"))
+        .and_then(|presets| presets.get("Town"));
+    let mut record = Value::dict();
+    record.set("align", Value::Int(1));
+    record.set("curve", Value::Real(0.0));
+    record.set("extra_spacing_char", Value::Int(0));
+    record.set("glow_size", Value::Int(0));
+    record.set("rotation", Value::Real(0.0));
+    record.set("z_index", Value::Int(0));
+    if let Some(preset) = preset {
+        if let Some(font) = preset.get("font_name").and_then(Value::as_str) {
+            record.set("font", Value::String(font.to_owned()));
+        }
+        if let Some(size) = preset.get("font_size").and_then(Value::as_f64) {
+            record.set("size", Value::Int(size.round() as i64));
+        }
+        if let Some(color) = theme_color(preset.get("font_color")) {
+            record.set("color", color);
+        }
+        if let Some(width) = preset.get("font_outline_width").and_then(Value::as_f64) {
+            record.set("outline_size", Value::Real(width));
+        }
+        if let Some(color) = theme_color(preset.get("font_outline_color")) {
+            record.set("outline_color", color);
+        }
+    }
+    record
 }
 
 fn transformed_rect(element: &El) -> ((f64, f64), f64, f64, f64, bool) {
@@ -1143,7 +1395,8 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                     .last()
                     .map(|element| element.matrix)
                     .unwrap_or(IDENTITY);
-                let el = element_from(&e, parent);
+                let parent_layer = stack.last().and_then(|element| element.layer.as_deref());
+                let el = element_from(&e, parent, parent_layer);
                 stack.push(el)
             }
             Ok(Event::Empty(e)) => {
@@ -1151,7 +1404,8 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                     .last()
                     .map(|element| element.matrix)
                     .unwrap_or(IDENTITY);
-                let el = element_from(&e, parent);
+                let parent_layer = stack.last().and_then(|element| element.layer.as_deref());
+                let el = element_from(&e, parent, parent_layer);
                 found.push(el)
             }
             Ok(Event::Text(t)) => {
@@ -1187,12 +1441,12 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
         }
     };
     for e in found {
-        match attr(&e, "kind") {
+        match attr(&e, "kind").or_else(|| inferred_kind(&e)) {
             Some("label") => {
-                let mut r = attr(&e, "record")
-                    .map(decode_record)
-                    .transpose()?
-                    .unwrap_or_else(Value::dict);
+                let mut r = match attr(&e, "record") {
+                    Some(record) => decode_record(record)?,
+                    None => town_label_record(root),
+                };
                 let position = mat_apply(e.matrix, f(&e, "x", 0.), f(&e, "y", 0.));
                 let (sx, sy, angle, _) = matrix_scale_rotation(e.matrix);
                 r.set(
@@ -1208,6 +1462,9 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                 );
                 r.set("rotation", Value::Real(normalize_angle(angle)));
                 r.set("text", Value::String(e.text.trim().to_owned()));
+                if let Some(color) = presentation_color(&e, "fill", "fill-opacity") {
+                    set_record_color(&mut r, color);
+                }
                 if let Some(font) = presentation(&e, "font-family") {
                     let family = font.trim_matches(['\'', '"']);
                     let style = presentation(&e, "font-style").unwrap_or("normal");
@@ -1227,7 +1484,11 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                         original_label
                     } else {
                         fonts::wonderdraft_label_for_name(&font_mapping, family, style, weight)
-                            .unwrap_or_else(|| family.to_owned())
+                            .or_else(|| {
+                                fonts::mapped_name(&font_mapping, family).map(|_| family.to_owned())
+                            })
+                            .or_else(|| r.get("font").and_then(Value::as_str).map(str::to_owned))
+                            .unwrap_or_else(|| "sans-serif".to_owned())
                     };
                     r.set("font", Value::String(label));
                 }
@@ -1353,6 +1614,12 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                     .map(decode_record)
                     .transpose()?
                     .unwrap_or_else(Value::dict);
+                if attr(&e, "kind").is_none() {
+                    r.set(
+                        "style",
+                        Value::String("res://textures/paths/path_blended".into()),
+                    );
+                }
                 let position = vec2(r.get("position"), (0., 0.));
                 let points = transformed_points(&e, position);
                 replace_record_points(&mut r, points);
@@ -1374,6 +1641,12 @@ pub fn import(root: &mut Value, source: &Path, resolver: &Resolver) -> Result<Su
                     .map(decode_record)
                     .transpose()?
                     .unwrap_or_else(Value::dict);
+                if attr(&e, "kind").is_none() {
+                    record.set(
+                        "style",
+                        Value::String("res://textures/borders/border_solid".into()),
+                    );
+                }
                 let position = vec2(record.get("position"), (0.0, 0.0));
                 let points = transformed_points(&e, position);
                 replace_record_points(&mut record, points);
@@ -1498,6 +1771,8 @@ mod tests {
         assert!(xml.contains("x=\"98\" y=\"164\""));
         assert!(xml.contains("wd:base-radius=\"7\""));
         assert!(xml.contains("transform=\"matrix("));
+        assert!(xml.contains("inkscape:groupmode=\"layer\""));
+        assert!(xml.contains("inkscape:label=\"wonderdraft-symbols\""));
         assert!(!xml.contains("wonderdraft-labels"));
         assert!(!xml.contains("wonderdraft-paths"));
         assert!(!xml.contains("wonderdraft-mask-background"));
@@ -1923,6 +2198,153 @@ mod tests {
                 (60.0, 70.0)
             ]
         );
+    }
+
+    #[test]
+    fn directional_pattern_uses_fifty_pixels_per_width_unit() {
+        let data = path_pattern_data(
+            &[(0.0, 0.0), (200.0, 0.0)],
+            0.1,
+            "res://textures/paths/path_directional",
+        );
+        let points = path_endpoints(&data);
+        let min_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!((max_y - min_y - 5.0).abs() < 0.000001);
+        assert!(data.matches('M').count() > 10);
+    }
+
+    #[test]
+    fn path_styles_export_as_strokes_or_fill_only_pattern_geometry() {
+        let make_path = |style: &str| {
+            dict(vec![
+                (
+                    "points",
+                    Value::String("[ Vector2( 0, 0 ), Vector2( 200, 0 ) ]".into()),
+                ),
+                (
+                    "color",
+                    Value::Vector {
+                        kind: "Color".into(),
+                        values: vec![0.0, 0.5, 1.0, 1.0],
+                    },
+                ),
+                ("style", Value::String(style.into())),
+                ("width", Value::Real(0.1)),
+            ])
+        };
+        let root = dict(vec![
+            ("map_width", Value::Int(200)),
+            ("map_height", Value::Int(100)),
+            (
+                "paths",
+                Value::Array(vec![
+                    make_path("res://textures/paths/path_circle"),
+                    make_path("res://textures/paths/path_dash"),
+                    make_path("res://textures/paths/path_dash_dot"),
+                    make_path("res://textures/paths/path_dash_dot_dot"),
+                    make_path("res://textures/paths/path_directional"),
+                ]),
+            ),
+        ]);
+        let destination = std::env::temp_dir().join(format!(
+            "wonderdraft-svg-path-styles-{}.svg",
+            std::process::id()
+        ));
+        export(
+            &root,
+            &Vec::new(),
+            &destination,
+            &Resolver::new(&Settings::default()),
+            ExportOptions {
+                background: false,
+                paths: true,
+                symbols: false,
+                labels: false,
+                territories: false,
+                embed_background: false,
+                embed_symbols: false,
+            },
+        )
+        .unwrap();
+        let xml = fs::read_to_string(&destination).unwrap();
+        assert!(xml.contains("stroke-dasharray=\"0 0.2\""));
+        assert!(xml.contains("stroke-dasharray=\"0.2 0.2\""));
+        assert!(xml.contains("wd:style=\"res://textures/paths/path_directional\""));
+        assert!(xml.contains(
+            "fill=\"#0080ff\" fill-opacity=\"1\" stroke=\"none\" wd:role=\"path-style\""
+        ));
+        let _ = fs::remove_file(destination);
+    }
+
+    #[test]
+    fn imports_untagged_elements_from_inkscape_layers_with_defaults() {
+        let base = std::env::temp_dir().join(format!(
+            "wonderdraft-svg-layer-import-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("layers.svg");
+        fs::write(
+            &source,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">
+  <g inkscape:groupmode="layer" inkscape:label="wonderdraft-labels" id="labels">
+    <text x="12" y="34" font-family="Definitely Missing" font-size="31" fill="#ff0080">New Town</text>
+  </g>
+  <g inkscape:groupmode="layer" inkscape:label="wonderdraft-paths" id="roads">
+    <path d="M 1,2 L 30,40" fill="none" stroke="#123456" stroke-width="7"/>
+  </g>
+  <g inkscape:groupmode="layer" inkscape:label="wonderdraft-territories" id="areas">
+    <path d="M 5,6 L 25,6 L 15,20 Z" fill="#abcdef" stroke="#abcdef" stroke-width="4"/>
+  </g>
+</svg>"##,
+        )
+        .unwrap();
+        let town = dict(vec![
+            ("font_name", Value::String("Lancelot".into())),
+            ("font_size", Value::Int(24)),
+            ("font_color", Value::String("0.1,0.2,0.3,1".into())),
+            ("font_outline_width", Value::Int(3)),
+            ("font_outline_color", Value::String("0.9,0.8,0.7,1".into())),
+        ]);
+        let mut root = dict(vec![(
+            "theme",
+            dict(vec![("label_presets", dict(vec![("Town", town)]))]),
+        )]);
+
+        let summary = import(&mut root, &source, &Resolver::new(&Settings::default())).unwrap();
+        assert_eq!(summary.labels, 1);
+        assert_eq!(summary.paths, 1);
+        assert_eq!(summary.territories, 1);
+        let label = &root.get("labels").and_then(Value::as_array).unwrap()[0];
+        assert_eq!(label.get("font").and_then(Value::as_str), Some("Lancelot"));
+        assert_eq!(label.get("size").and_then(Value::as_f64), Some(31.0));
+        let Value::Vector { values, .. } = label.get("color").unwrap() else {
+            panic!("label color was not imported");
+        };
+        assert_eq!(values, &[1.0, 0.0, 128.0 / 255.0, 1.0]);
+        let road = &root.get("paths").and_then(Value::as_array).unwrap()[0];
+        assert_eq!(
+            road.get("style").and_then(Value::as_str),
+            Some("res://textures/paths/path_blended")
+        );
+        let territory = &root
+            .get("territories")
+            .and_then(|value| value.get("territories"))
+            .and_then(Value::as_array)
+            .unwrap()[0];
+        assert_eq!(
+            territory.get("style").and_then(Value::as_str),
+            Some("res://textures/borders/border_solid")
+        );
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

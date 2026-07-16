@@ -113,6 +113,20 @@ start_wonderdraft_editor_rust.bat
 The compiled executable is `target/release/wonderdraft-editor` (or
 `wonderdraft-editor.exe` on Windows).
 
+### Decode `wd:record` metadata
+
+The dependency-free Python GUI `wd_record_decoder.py` decodes raw `wd:record`
+values, complete attribute snippets, or every record in an opened SVG file:
+
+```bash
+python3 wd_record_decoder.py
+```
+
+It displays the decoded Godot text and can copy or save the result. The tool
+uses Python's standard Tkinter GUI; no Python packages need to be installed.
+Use **Ctrl+Enter** to decode, **Ctrl+O** to open an SVG, and **Ctrl+S** to save
+the decoded text.
+
 ### Linux application launcher
 
 After building the release executable, install an application-menu launcher
