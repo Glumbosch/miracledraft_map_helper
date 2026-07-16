@@ -67,15 +67,21 @@ later with **Settings… → Run setup wizard…**.
 2. Extract the core sprites. If `Wonderdraft.pck` is found automatically, click
    **Extract detected Wonderdraft.pck**. Otherwise click
    **Choose Wonderdraft.pck…** and select the file manually.
-3. Optionally install the extracted fonts from `wonderdraft_files/fonts/` for
-   the current user. This does not require administrator access.
+3. Optionally install fonts for the current user. The wizard has separate
+   checkboxes for core fonts from `wonderdraft_files/fonts/` and fonts found in
+   custom asset packs. Enable **Choose fonts individually** to select files one
+   by one, or use **Skip font installation** to continue without installing
+   anything. This does not require administrator access.
 4. Confirm the disk-cache folder and finish setup.
 
 The Wonderdraft integration, sprite extraction, and font installation are
 optional. You can finish the wizard without them and configure them later.
 
 The font step supports TrueType and OpenType font files (`.ttf`, `.otf`,
-`.ttc`, and `.otc`) and installs into the platform's per-user font folder:
+`.ttc`, and `.otc`). Custom assets are searched recursively, but a custom font
+is included only when it is inside a folder named `fonts` (case-insensitive),
+such as `assets/My Pack/fonts/`. Selected fonts install into the platform's
+per-user font folder:
 
 - Linux: `$XDG_DATA_HOME/fonts`, or `~/.local/share/fonts`
 - macOS: `~/Library/Fonts`

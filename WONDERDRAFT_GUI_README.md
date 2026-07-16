@@ -51,9 +51,11 @@ wonderdraft_gui.config
 The application has its own PCK extractor. Use **Choose Wonderdraft.pck…** in
 the wizard if automatic discovery does not find the installation.
 
-After extraction, the wizard can optionally install supported fonts from
-`wonderdraft_files/fonts/` into the current user's standard font folder on
-Windows, Linux, or macOS. Existing identical fonts are skipped safely, and a
+After extraction, the wizard can optionally install core fonts from
+`wonderdraft_files/fonts/` and fonts inside custom asset-pack `fonts` folders.
+The two sources have separate checkboxes; fonts can also be selected one by one
+or skipped entirely. Installation uses the current user's standard font folder
+on Windows, Linux, or macOS. Existing identical fonts are skipped safely, and a
 different existing font with the same filename is never overwritten. No
 administrator access is required. See `README.md` for the platform paths and
 font-cache behavior.

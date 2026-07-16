@@ -48,6 +48,12 @@ struct App {
     map_load: Option<Receiver<Result<LoadedMap>>>,
     pck_extraction: Option<Receiver<Result<pck::Extraction>>>,
     font_installation: Option<Receiver<Result<fonts::Installation>>>,
+    install_core_fonts: bool,
+    install_custom_fonts: bool,
+    choose_fonts_individually: bool,
+    font_choices: Vec<FontChoice>,
+    font_list_loaded: bool,
+    font_discovery_error: Option<String>,
     search_open: bool,
     search_query: String,
     search_from: usize,
@@ -85,6 +91,12 @@ struct DialogSelection {
     action: DialogAction,
     path: Option<PathBuf>,
 }
+
+struct FontChoice {
+    candidate: fonts::Candidate,
+    selected: bool,
+}
+
 impl Default for App {
     fn default() -> Self {
         let mut settings = settings::load();
@@ -137,6 +149,12 @@ impl Default for App {
             map_load: None,
             pck_extraction: None,
             font_installation: None,
+            install_core_fonts: true,
+            install_custom_fonts: true,
+            choose_fonts_individually: false,
+            font_choices: Vec::new(),
+            font_list_loaded: false,
+            font_discovery_error: None,
             search_open: false,
             search_query: String::new(),
             search_from: 0,
@@ -357,6 +375,7 @@ impl App {
                 Ok(Ok(extracted)) => {
                     self.settings.default_asset_folder =
                         extracted.sprites_dir.to_string_lossy().into_owned();
+                    self.font_list_loaded = false;
                     match settings::save(&self.settings) {
                         Ok(()) => {
                             self.status = format!(
@@ -438,6 +457,7 @@ impl App {
             DialogAction::CustomAssets => {
                 self.settings.custom_asset_folder = path.to_string_lossy().into_owned();
                 self.settings.auto_locate_custom_assets = false;
+                self.font_list_loaded = false;
                 return;
             }
             DialogAction::DefaultSprites => {
@@ -490,6 +510,7 @@ impl App {
             self.settings.custom_asset_folder = settings::custom_assets_folder(&folder, &config)
                 .to_string_lossy()
                 .into_owned();
+            self.font_list_loaded = false;
         }
         self.wonderdraft_config = config;
         Ok(())
@@ -534,17 +555,64 @@ impl App {
             repaint.request_repaint();
         });
     }
+    fn refresh_font_choices(&mut self) {
+        let core = fonts::source_dir();
+        let custom = self.settings.custom_asset_folder.trim();
+        let custom = (!custom.is_empty()).then(|| PathBuf::from(custom));
+        let previous = std::mem::take(&mut self.font_choices);
+        match fonts::discover(Some(&core), custom.as_deref()) {
+            Ok(candidates) => {
+                self.font_choices = candidates
+                    .into_iter()
+                    .map(|candidate| {
+                        let selected = previous
+                            .iter()
+                            .find(|choice| choice.candidate.path == candidate.path)
+                            .map(|choice| choice.selected)
+                            .unwrap_or(true);
+                        FontChoice {
+                            candidate,
+                            selected,
+                        }
+                    })
+                    .collect();
+                self.font_discovery_error = None;
+            }
+            Err(error) => {
+                self.font_discovery_error = Some(error.to_string());
+            }
+        }
+        self.font_list_loaded = true;
+    }
+    fn selected_font_paths(&self) -> Vec<PathBuf> {
+        self.font_choices
+            .iter()
+            .filter(|choice| match choice.candidate.origin {
+                fonts::Origin::Core => self.install_core_fonts,
+                fonts::Origin::Custom => self.install_custom_fonts,
+            })
+            .filter(|choice| !self.choose_fonts_individually || choice.selected)
+            .map(|choice| choice.candidate.path.clone())
+            .collect()
+    }
     fn begin_font_installation(&mut self, ctx: &egui::Context) {
         if self.font_installation.is_some() {
             return;
         }
-        let source = fonts::source_dir();
+        if !self.font_list_loaded {
+            self.refresh_font_choices();
+        }
+        let selected = self.selected_font_paths();
+        if selected.is_empty() {
+            self.status = "No fonts selected; choose a font source or skip this step".into();
+            return;
+        }
         let (sender, receiver) = mpsc::channel();
         let repaint = ctx.clone();
         self.font_installation = Some(receiver);
-        self.status = format!("Installing Wonderdraft fonts from {}…", source.display());
+        self.status = format!("Installing {} selected Wonderdraft fonts…", selected.len());
         std::thread::spawn(move || {
-            let result = fonts::install_for_current_user(&source);
+            let result = fonts::install_selected(&selected);
             let _ = sender.send(result);
             repaint.request_repaint();
         });
@@ -569,6 +637,7 @@ impl App {
     fn show_setup_wizard(&mut self, ctx: &egui::Context) {
         let mut open = self.setup_wizard_open;
         let mut finish = false;
+        let mut skip_fonts = false;
         egui::Window::new("Wonderdraft Map Editor setup")
             .open(&mut open)
             .collapsible(false)
@@ -612,12 +681,15 @@ impl App {
                             );
                         }
                         ui.horizontal(|ui| {
-                            ui.add(
+                            let response = ui.add(
                                 egui::TextEdit::singleline(
                                     &mut self.settings.wonderdraft_folder,
                                 )
                                 .desired_width(470.0),
                             );
+                            if response.changed() {
+                                self.font_list_loaded = false;
+                            }
                             if ui
                                 .add_enabled(
                                     self.pending_dialog.is_none(),
@@ -694,13 +766,14 @@ impl App {
                         ));
                     }
                     3 => {
+                        if !self.font_list_loaded {
+                            self.refresh_font_choices();
+                        }
                         ui.heading("Wonderdraft fonts");
                         ui.label(
-                            "Optionally install the fonts extracted from Wonderdraft.pck for your user account. Administrator access is not required.",
+                            "Optionally install core fonts, fonts supplied by custom asset packs, or selected fonts only. Administrator access is not required.",
                         );
                         ui.add_space(6.0);
-                        let source = fonts::source_dir();
-                        ui.label(format!("Source: {}", source.display()));
                         match fonts::user_fonts_dir() {
                             Ok(destination) => {
                                 ui.label(format!("User font folder: {}", destination.display()));
@@ -709,24 +782,114 @@ impl App {
                                 ui.colored_label(egui::Color32::YELLOW, error.to_string());
                             }
                         }
-                        if source.is_dir() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(70, 170, 90),
-                                "Extracted fonts are ready to install.",
-                            );
-                        } else {
+                        if let Some(error) = &self.font_discovery_error {
                             ui.colored_label(
                                 egui::Color32::YELLOW,
-                                "No extracted fonts were found. Go back and extract Wonderdraft.pck, or skip this optional step.",
+                                format!("Font discovery failed: {error}"),
                             );
                         }
                         ui.add_space(6.0);
+                        let core_count = self
+                            .font_choices
+                            .iter()
+                            .filter(|choice| choice.candidate.origin == fonts::Origin::Core)
+                            .count();
+                        let custom_count = self
+                            .font_choices
+                            .iter()
+                            .filter(|choice| choice.candidate.origin == fonts::Origin::Custom)
+                            .count();
+                        ui.add_enabled_ui(core_count > 0, |ui| {
+                            ui.checkbox(
+                                &mut self.install_core_fonts,
+                                format!("Core asset fonts ({core_count})"),
+                            );
+                        });
+                        ui.add_enabled_ui(custom_count > 0, |ui| {
+                            ui.checkbox(
+                                &mut self.install_custom_fonts,
+                                format!("Custom asset-pack fonts ({custom_count})"),
+                            );
+                        });
+                        if core_count == 0 {
+                            ui.small(
+                                "No core fonts found in wonderdraft_files/fonts/. Extract Wonderdraft.pck to make them available.",
+                            );
+                        }
+                        if custom_count == 0 {
+                            ui.small(
+                                "No custom fonts found below folders named fonts in the configured custom-assets directory.",
+                            );
+                        }
+                        ui.checkbox(
+                            &mut self.choose_fonts_individually,
+                            "Choose fonts individually",
+                        );
+                        if self.choose_fonts_individually {
+                            ui.horizontal(|ui| {
+                                if ui.button("Select all enabled fonts").clicked() {
+                                    for choice in &mut self.font_choices {
+                                        let enabled = match choice.candidate.origin {
+                                            fonts::Origin::Core => self.install_core_fonts,
+                                            fonts::Origin::Custom => self.install_custom_fonts,
+                                        };
+                                        if enabled {
+                                            choice.selected = true;
+                                        }
+                                    }
+                                }
+                                if ui.button("Clear enabled fonts").clicked() {
+                                    for choice in &mut self.font_choices {
+                                        let enabled = match choice.candidate.origin {
+                                            fonts::Origin::Core => self.install_core_fonts,
+                                            fonts::Origin::Custom => self.install_custom_fonts,
+                                        };
+                                        if enabled {
+                                            choice.selected = false;
+                                        }
+                                    }
+                                }
+                            });
+                            egui::ScrollArea::vertical()
+                                .id_salt("setup-font-selection")
+                                .max_height(190.0)
+                                .show(ui, |ui| {
+                                    for choice in &mut self.font_choices {
+                                        let (enabled, source) = match choice.candidate.origin {
+                                            fonts::Origin::Core => {
+                                                (self.install_core_fonts, "Core")
+                                            }
+                                            fonts::Origin::Custom => {
+                                                (self.install_custom_fonts, "Custom")
+                                            }
+                                        };
+                                        let file_name = choice
+                                            .candidate
+                                            .path
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy();
+                                        ui.add_enabled(
+                                            enabled,
+                                            egui::Checkbox::new(
+                                                &mut choice.selected,
+                                                format!("[{source}] {file_name}"),
+                                            ),
+                                        )
+                                        .on_hover_text(choice.candidate.path.display().to_string());
+                                    }
+                                });
+                        }
+                        let selected_count = self.selected_font_paths().len();
+                        ui.small(format!("{selected_count} fonts selected for installation"));
                         if ui
                             .add_enabled(
-                                source.is_dir()
+                                selected_count > 0
                                     && self.pck_extraction.is_none()
                                     && self.font_installation.is_none(),
-                                egui::Button::new("Install Wonderdraft fonts for this user"),
+                                egui::Button::new(format!(
+                                    "Install {selected_count} fonts for this user"
+                                )),
                             )
                             .clicked()
                         {
@@ -737,6 +900,15 @@ impl App {
                                 ui.spinner();
                                 ui.label("Installing fonts and refreshing the font registry…");
                             });
+                        }
+                        if ui
+                            .add_enabled(
+                                self.font_installation.is_none(),
+                                egui::Button::new("Skip font installation"),
+                            )
+                            .clicked()
+                        {
+                            skip_fonts = true;
                         }
                         ui.small(
                             "Fonts that are already installed are skipped. A different existing font with the same filename is preserved and reported.",
@@ -836,6 +1008,9 @@ impl App {
                 Ok(()) => open = false,
                 Err(error) => self.fail("Setup could not be saved", error),
             }
+        }
+        if skip_fonts {
+            self.setup_step = 4;
         }
         self.setup_wizard_open = open;
     }
@@ -1347,6 +1522,7 @@ impl eframe::App for App {
                     ui.heading("Wonderdraft");
                     if ui.button("Run setup wizard…").clicked() {
                         self.setup_step = 0;
+                        self.font_list_loaded = false;
                         self.setup_wizard_open = true;
                         self.settings_backup = None;
                         saved = true;
@@ -1375,11 +1551,14 @@ impl eframe::App for App {
                     });
                     ui.label("Custom asset folder");
                     ui.horizontal(|ui| {
-                        ui.add_enabled(
+                        let response = ui.add_enabled(
                             !self.settings.auto_locate_custom_assets,
                             egui::TextEdit::singleline(&mut self.settings.custom_asset_folder)
                                 .desired_width(480.0),
                         );
+                        if response.changed() {
+                            self.font_list_loaded = false;
+                        }
                         if ui
                             .add_enabled(
                                 !self.settings.auto_locate_custom_assets,

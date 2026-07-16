@@ -15,6 +15,18 @@ pub struct Installation {
     font_files: Vec<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Core,
+    Custom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub path: PathBuf,
+    pub origin: Origin,
+}
+
 pub fn source_dir() -> PathBuf {
     crate::pck::default_output_dir().join("fonts")
 }
@@ -52,8 +64,40 @@ pub fn install_for_current_user(source: &Path) -> Result<Installation> {
             source.display()
         )));
     }
+    let mut paths = Vec::new();
+    collect_fonts(source, &mut paths)?;
+    install_selected(&paths)
+}
+
+pub fn discover(core: Option<&Path>, custom_assets: Option<&Path>) -> Result<Vec<Candidate>> {
+    let mut candidates = Vec::new();
+    if let Some(core) = core.filter(|directory| directory.is_dir()) {
+        let mut paths = Vec::new();
+        collect_fonts(core, &mut paths)?;
+        candidates.extend(paths.into_iter().map(|path| Candidate {
+            path,
+            origin: Origin::Core,
+        }));
+    }
+    if let Some(custom_assets) = custom_assets.filter(|directory| directory.is_dir()) {
+        let mut paths = Vec::new();
+        collect_custom_fonts(custom_assets, false, &mut paths)?;
+        candidates.extend(paths.into_iter().map(|path| Candidate {
+            path,
+            origin: Origin::Custom,
+        }));
+    }
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    candidates.dedup_by(|left, right| left.path == right.path);
+    Ok(candidates)
+}
+
+pub fn install_selected(fonts: &[PathBuf]) -> Result<Installation> {
+    if fonts.is_empty() {
+        return Err(Error::format("No fonts were selected for installation"));
+    }
     let destination = user_fonts_dir()?;
-    let mut installation = install_into(source, &destination)?;
+    let mut installation = install_files_into(fonts, &destination)?;
     refresh_font_registry(&mut installation);
     Ok(installation)
 }
@@ -83,11 +127,33 @@ fn collect_fonts(directory: &Path, fonts: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn install_into(source: &Path, destination: &Path) -> Result<Installation> {
+fn collect_custom_fonts(
+    directory: &Path,
+    inside_fonts_folder: bool,
+    fonts: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory).at(directory)? {
+        let entry = entry.at(directory)?;
+        let path = entry.path();
+        let file_type = entry.file_type().at(&path)?;
+        if file_type.is_dir() {
+            let is_fonts_folder = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("fonts"));
+            collect_custom_fonts(&path, inside_fonts_folder || is_fonts_folder, fonts)?;
+        } else if inside_fonts_folder && file_type.is_file() && is_font(&path) {
+            fonts.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn install_files_into(fonts: &[PathBuf], destination: &Path) -> Result<Installation> {
     fs::create_dir_all(destination).at(destination)?;
-    let mut fonts = Vec::new();
-    collect_fonts(source, &mut fonts)?;
+    let mut fonts = fonts.to_vec();
     fonts.sort();
+    fonts.dedup();
 
     let mut installation = Installation {
         discovered: fonts.len(),
@@ -95,6 +161,13 @@ fn install_into(source: &Path, destination: &Path) -> Result<Installation> {
         ..Installation::default()
     };
     for font in fonts {
+        if !font.is_file() || !is_font(&font) {
+            installation.warnings.push(format!(
+                "Skipped a missing or unsupported font: {}",
+                font.display()
+            ));
+            continue;
+        }
         let Some(file_name) = font.file_name() else {
             continue;
         };
@@ -251,7 +324,9 @@ mod tests {
         fs::write(destination.join("same.otf"), b"same font").unwrap();
         fs::write(destination.join("conflict.ttc"), b"installed version").unwrap();
 
-        let result = install_into(base.join("source").as_path(), &destination).unwrap();
+        let mut selected = Vec::new();
+        collect_fonts(base.join("source").as_path(), &mut selected).unwrap();
+        let result = install_files_into(&selected, &destination).unwrap();
 
         assert_eq!(result.discovered, 3);
         assert_eq!(result.installed, 1);
@@ -261,6 +336,49 @@ mod tests {
         assert_eq!(
             fs::read(destination.join("conflict.ttc")).unwrap(),
             b"installed version"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn discovery_only_uses_named_custom_fonts_folders() {
+        let base = env::temp_dir().join(format!(
+            "wonderdraft-font-discovery-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let core = base.join("wonderdraft_files/fonts");
+        let custom = base.join("assets");
+        fs::create_dir_all(&core).unwrap();
+        fs::create_dir_all(custom.join("Pack One/fonts/nested")).unwrap();
+        fs::create_dir_all(custom.join("Pack Two/FONTS")).unwrap();
+        fs::create_dir_all(custom.join("Pack Three/sprites")).unwrap();
+        fs::write(core.join("core.ttf"), b"core").unwrap();
+        fs::write(custom.join("Pack One/fonts/nested/custom.otf"), b"one").unwrap();
+        fs::write(custom.join("Pack Two/FONTS/custom-two.ttc"), b"two").unwrap();
+        fs::write(custom.join("Pack Three/sprites/not-a-font.ttf"), b"ignored").unwrap();
+
+        let found = discover(Some(&core), Some(&custom)).unwrap();
+
+        assert_eq!(found.len(), 3);
+        assert_eq!(
+            found
+                .iter()
+                .filter(|candidate| candidate.origin == Origin::Core)
+                .count(),
+            1
+        );
+        assert_eq!(
+            found
+                .iter()
+                .filter(|candidate| candidate.origin == Origin::Custom)
+                .count(),
+            2
+        );
+        assert!(
+            found
+                .iter()
+                .all(|candidate| !candidate.path.ends_with("not-a-font.ttf"))
         );
         let _ = fs::remove_dir_all(base);
     }
