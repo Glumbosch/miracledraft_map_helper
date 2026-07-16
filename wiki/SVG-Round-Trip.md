@@ -1,0 +1,51 @@
+# SVG Round Trip
+
+The SVG workflow is designed for editing Wonderdraft roads, paths, symbols,
+labels, and territories in applications such as Inkscape.
+
+## Workflow
+
+1. Open a `.wonderdraft_map` and keep an untouched backup.
+2. Enable only the layers you need under **SVG export layers**.
+3. Enable **Embed mask in SVG** and/or **Embed symbols in SVG** if the SVG must
+   be portable to another folder or computer.
+4. Click **Export SVG…**.
+5. Edit the SVG while preserving `wd:*` metadata attributes.
+6. Click **Import SVG…** and choose the edited SVG.
+7. Review the import count in the status/dialog, then click **Save map as…**.
+8. Open the new map in Wonderdraft and verify it visually.
+
+## Example
+
+Original map and decoded data:
+
+![Original Wonderdraft map beside the editor](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/load_pre_edit.jpg)
+
+Editing a road/path in Inkscape:
+
+![Editing an exported road in Inkscape](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/in_inkscape.jpg)
+
+Saved map after importing the SVG:
+
+![Edited SVG content imported back into Wonderdraft](https://raw.githubusercontent.com/Glumbosch/wonderdraft_map_extractor/main/screenshots/after_edit.jpg)
+
+## Round-trip behavior
+
+- `wd:*` attributes retain the original Wonderdraft records. Untagged SVG
+  elements are imported on a best-effort basis.
+- Roads and territory areas export as SVG `<path>` elements for convenient node
+  editing. Edited path endpoints become Wonderdraft point lists on import.
+- Repeated embedded symbols share one image definition and use `<use>` clones.
+- Symbol custom-color modes, transparency, rotation, mirroring, and outlines are
+  represented with SVG transforms and reusable filters.
+- Labels retain mapped font family, style, weight, outlines, and glow where the
+  source data provides them.
+- Territory opacity and supported solid, dashed, gradient, and dark-dot borders
+  are represented in SVG.
+
+## Missing symbols
+
+Built-in textures resolve below **Default sprites folder**. Custom pack textures
+resolve below **Custom asset folder**. Run the setup wizard to extract core
+sprites and locate Wonderdraft assets, then export again. The export summary
+reports missing sprites.
