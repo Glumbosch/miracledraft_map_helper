@@ -21,14 +21,8 @@
 
 5. Watch the **Release** workflow. It validates that `v0.4.6` matches the Cargo
    package version, builds each platform archive, publishes checksums and build
-   provenance, creates the GitHub release, and publishes the Linux, Windows,
-   and macOS builds to [itch.io](https://glumbosch.itch.io/miracledraft-map-helper).
+   provenance, and creates the GitHub release.
 6. Download an archive from the published release and perform a smoke test.
-
-The itch.io publishing steps use the `buttler_api_key` GitHub Actions secret.
-The Linux, Windows, and macOS builds are published to the `linux`, `windows`,
-and `osx` channels respectively. The itch.io project slug is
-`glumbosch/miracledraft-map-helper`.
 
 If a release workflow fails, fix the cause and create a new patch version. Do
 not silently move a tag after users may have downloaded artifacts.
