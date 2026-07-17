@@ -115,10 +115,7 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: build
-    # The selected Butler action currently rejects Linux runners and supports
-    # Windows/macOS only. Keep this job on macOS so itch.io publishing and
-    # GitHub release publication can share the downloaded artifacts.
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
@@ -144,39 +141,40 @@ jobs:
             rm -rf "$windows_dir"
           fi
 
+      - name: Install Butler
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          if [ -z "$BUTLER_API_KEY" ]; then
+            echo "::error::Repository secret BUTLER_API_KEY is not configured"
+            exit 1
+          fi
+          mkdir -p tools
+          curl --fail --location --silent --show-error \
+            --output tools/butler.zip \
+            https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q tools/butler.zip -d tools
+          chmod +x tools/butler
+          tools/butler -V
+
       - name: Publish Linux build to itch.io
-        uses: Oval-Tutu/publish-to-itch-with-butler@1.0.0
-        with:
-          api-key: ${{ secrets.buttler_api_key }}
-          itch_user: glumbosch
-          itch_game: miracledraft-map-helper
-          channel: linux
-          package: itch/linux
-          version: ${{ github.ref_name }}
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: tools/butler push itch/linux glumbosch/miracledraft-map-helper:linux --userversion "$GITHUB_REF_NAME"
 
       - name: Publish Windows build to itch.io
-        uses: Oval-Tutu/publish-to-itch-with-butler@1.0.0
-        with:
-          api-key: ${{ secrets.buttler_api_key }}
-          itch_user: glumbosch
-          itch_game: miracledraft-map-helper
-          channel: windows
-          package: itch/windows
-          version: ${{ github.ref_name }}
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: tools/butler push itch/windows glumbosch/miracledraft-map-helper:windows --userversion "$GITHUB_REF_NAME"
 
       - name: Publish macOS build to itch.io
-        uses: Oval-Tutu/publish-to-itch-with-butler@1.0.0
-        with:
-          api-key: ${{ secrets.buttler_api_key }}
-          itch_user: glumbosch
-          itch_game: miracledraft-map-helper
-          channel: osx
-          package: itch/macos
-          version: ${{ github.ref_name }}
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: tools/butler push itch/macos glumbosch/miracledraft-map-helper:osx --userversion "$GITHUB_REF_NAME"
 
       - name: Create checksums
         working-directory: dist
-        run: shasum -a 256 *.tar.gz *.zip > SHA256SUMS
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS
 
       - name: Attest release artifacts
         uses: actions/attest@v4
