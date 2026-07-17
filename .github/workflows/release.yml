@@ -142,7 +142,7 @@ jobs:
           fi
 
       - name: Publish Linux build to itch.io
-        uses: Oval-Tutu/publish-to-itch-with-butler@v1
+        uses: Oval-Tutu/publish-to-itch-with-butler@1.0.0
         with:
           api-key: ${{ secrets.buttler_api_key }}
           itch_user: glumbosch
@@ -152,7 +152,7 @@ jobs:
           version: ${{ github.ref_name }}
 
       - name: Publish Windows build to itch.io
-        uses: Oval-Tutu/publish-to-itch-with-butler@v1
+        uses: Oval-Tutu/publish-to-itch-with-butler@1.0.0
         with:
           api-key: ${{ secrets.buttler_api_key }}
           itch_user: glumbosch
@@ -162,7 +162,7 @@ jobs:
           version: ${{ github.ref_name }}
 
       - name: Publish macOS build to itch.io
-        uses: Oval-Tutu/publish-to-itch-with-butler@v1
+        uses: Oval-Tutu/publish-to-itch-with-butler@1.0.0
         with:
           api-key: ${{ secrets.buttler_api_key }}
           itch_user: glumbosch
