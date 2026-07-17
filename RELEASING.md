@@ -15,11 +15,11 @@
 4. Commit the release version, then create and push a matching tag:
 
    ```bash
-   git tag -a v0.4.4 -m "Release v0.4.4"
-   git push origin main v0.4.4
+   git tag -a v0.4.5 -m "Release v0.4.5"
+   git push origin main v0.4.5
    ```
 
-5. Watch the **Release** workflow. It validates that `v0.4.4` matches the Cargo
+5. Watch the **Release** workflow. It validates that `v0.4.5` matches the Cargo
    package version, builds each platform archive, publishes checksums and build
    provenance, creates the GitHub release, and publishes the Linux, Windows,
    and macOS builds to [itch.io](https://glumbosch.itch.io/miracledraft-map-helper).

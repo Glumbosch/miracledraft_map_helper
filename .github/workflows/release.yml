@@ -115,7 +115,10 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: build
-    runs-on: ubuntu-latest
+    # The selected Butler action currently rejects Linux runners and supports
+    # Windows/macOS only. Keep this job on macOS so itch.io publishing and
+    # GitHub release publication can share the downloaded artifacts.
+    runs-on: macos-15
     permissions:
       contents: write
       id-token: write
@@ -173,7 +176,7 @@ jobs:
 
       - name: Create checksums
         working-directory: dist
-        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+        run: shasum -a 256 *.tar.gz *.zip > SHA256SUMS
 
       - name: Attest release artifacts
         uses: actions/attest@v4
