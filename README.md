@@ -339,7 +339,7 @@ See [SVG_INTERCHANGE_NOTES.md](SVG_INTERCHANGE_NOTES.md) for format details and
 ## Making a release
 
 Update the version in `Cargo.toml`, commit the corresponding `Cargo.lock`
-change, and push a matching semantic-version tag such as `v0.4.2`. The release
+change, and push a matching semantic-version tag such as `v0.4.3`. The release
 workflow validates the version, builds all supported packages, generates
 checksums and provenance attestations, and publishes a GitHub release with
 automatically generated notes. See [RELEASING.md](RELEASING.md) for the exact

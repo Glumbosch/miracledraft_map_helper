@@ -15,14 +15,20 @@
 4. Commit the release version, then create and push a matching tag:
 
    ```bash
-   git tag -a v0.4.2 -m "Release v0.4.2"
-   git push origin main v0.4.2
+   git tag -a v0.4.3 -m "Release v0.4.3"
+   git push origin main v0.4.3
    ```
 
-5. Watch the **Release** workflow. It validates that `v0.4.2` matches the Cargo
+5. Watch the **Release** workflow. It validates that `v0.4.3` matches the Cargo
    package version, builds each platform archive, publishes checksums and build
-   provenance, and creates the GitHub release.
+   provenance, creates the GitHub release, and publishes the Linux, Windows,
+   and macOS builds to [itch.io](https://glumbosch.itch.io/miracledraft-map-helper).
 6. Download an archive from the published release and perform a smoke test.
+
+The itch.io publishing steps use the `buttler_api_key` GitHub Actions secret.
+The Linux, Windows, and macOS builds are published to the `linux`, `windows`,
+and `osx` channels respectively. The itch.io project slug is
+`glumbosch/miracledraft-map-helper`.
 
 If a release workflow fails, fix the cause and create a new patch version. Do
 not silently move a tag after users may have downloaded artifacts.

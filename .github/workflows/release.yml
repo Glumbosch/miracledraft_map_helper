@@ -128,6 +128,49 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Prepare itch.io packages
+        shell: bash
+        run: |
+          mkdir -p itch/linux itch/windows itch/macos
+          tar -xzf dist/*-linux-x86_64.tar.gz --strip-components=1 -C itch/linux
+          tar -xzf dist/*-macos-aarch64.tar.gz --strip-components=1 -C itch/macos
+          unzip -q dist/*-windows-x86_64.zip -d itch/windows
+          windows_dir=$(find itch/windows -mindepth 1 -maxdepth 1 -type d -print -quit)
+          if [ -n "$windows_dir" ]; then
+            cp -a "$windows_dir"/. itch/windows/
+            rm -rf "$windows_dir"
+          fi
+
+      - name: Publish Linux build to itch.io
+        uses: Oval-Tutu/publish-to-itch-with-butler@v1
+        with:
+          api-key: ${{ secrets.buttler_api_key }}
+          itch_user: glumbosch
+          itch_game: miracledraft-map-helper
+          channel: linux
+          package: itch/linux
+          version: ${{ github.ref_name }}
+
+      - name: Publish Windows build to itch.io
+        uses: Oval-Tutu/publish-to-itch-with-butler@v1
+        with:
+          api-key: ${{ secrets.buttler_api_key }}
+          itch_user: glumbosch
+          itch_game: miracledraft-map-helper
+          channel: windows
+          package: itch/windows
+          version: ${{ github.ref_name }}
+
+      - name: Publish macOS build to itch.io
+        uses: Oval-Tutu/publish-to-itch-with-butler@v1
+        with:
+          api-key: ${{ secrets.buttler_api_key }}
+          itch_user: glumbosch
+          itch_game: miracledraft-map-helper
+          channel: osx
+          package: itch/macos
+          version: ${{ github.ref_name }}
+
       - name: Create checksums
         working-directory: dist
         run: sha256sum *.tar.gz *.zip > SHA256SUMS
