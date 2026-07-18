@@ -1,4 +1,5 @@
 /target/
+/wonderdraft_files/*
 /wonderdraft_files/
 /miracledraft_map_helper.config
 /wonderdraft_gui.config
@@ -7,3 +8,4 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.wonderdraft_map
+tempfiles/*
