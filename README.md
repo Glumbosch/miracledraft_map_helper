@@ -247,9 +247,11 @@ pick up extracted image extensions such as `.png`.
 ### Render an SVG as a new map
 
 **Render SVG…** creates a new map from scratch instead of modifying an open
-map. The SVG width and height become the Wonderdraft viewport. The setup window
-lists every SVG class; when no classes exist, it lists Inkscape layers and
-treats their contents as having the layer name as a class.
+map. It opens its configuration in a separate native window, while the main
+editor remains available. The SVG width and height become the Wonderdraft
+viewport. The setup window lists every SVG class; when no classes exist, it
+lists Inkscape layers and treats their contents as having the layer name as a
+class.
 
 Each class can be mapped to `symbol`, `path`, `ground`, `water_tint`,
 `territory`, `landmass`, `freshwater`, or `invisible`. Class-specific controls
@@ -258,6 +260,24 @@ raster fill and border overrides; and optional labels. Label text defaults to
 the `map:svgname` field (with `mapsvg:name` compatibility) and supports font,
 size, colors, outline, and offsets. Settings tables can be saved to and loaded
 from CSV.
+
+For symbol classes, **Symbol gallery…** opens a scrollable second window over
+all configured core, pack, and custom assets. It provides a name filter, tile
+scale, black/white/checkerboard background choices, and selects an asset on
+double-click. The gallery and renderer read a persisted asset database; use
+**Settings → Rebuild symbol database** after changing an asset folder. Setup
+rebuilds it automatically once custom and core asset folders are ready. Each
+tile carries a rubber-stamp, brush, or palette icon for normal, sample-color,
+or three-custom-color draw modes read from `.wonderdraft_symbols`.
+
+Sample-color assets expose one tint picker. Three-custom-color assets expose
+three pickers and export Wonderdraft `custom_color_mode: 1` with a
+`custom_colors` list; normal symbols retain their original artwork. Symbol
+scale has a 0–100 slider and accepts typed values outside that range. The path
+style selector previews the extracted `textures/paths` PNGs on a dark backing
+so transparent white line art remains visible. If an old core-sprites setting
+points at a missing extraction, the helper automatically repairs it to this
+checkout's `wonderdraft_files/sprites` directory.
 
 Symbols whose centers are outside the viewport are omitted. Paths and shapes
 that cross a viewport edge are retained. Landmass shapes are painted black on

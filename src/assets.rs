@@ -1,4 +1,7 @@
-use crate::settings::Settings;
+use crate::{
+    Error, Result,
+    settings::{self, Settings},
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -11,7 +14,7 @@ pub struct Resolver {
     pub packs: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AssetInfo {
     pub texture: String,
     pub path: PathBuf,
@@ -24,7 +27,9 @@ pub struct AssetInfo {
 }
 impl Resolver {
     pub fn new(s: &Settings) -> Self {
-        let default = nonempty(&s.default_asset_folder);
+        let default = nonempty(&s.default_asset_folder)
+            .filter(|path| path.is_dir())
+            .or_else(bundled_core_sprites);
         let packs = default
             .as_deref()
             .filter(|path| {
@@ -139,6 +144,40 @@ impl Resolver {
         assets
     }
 
+    /// Load the persisted symbol index, rebuilding it on first use. Entries
+    /// whose source files were removed are ignored.
+    pub fn symbol_database(&self) -> Result<Vec<AssetInfo>> {
+        let path = symbol_database_path();
+        if let Ok(text) = fs::read_to_string(&path)
+            && let Ok(database) = serde_json::from_str::<SymbolDatabase>(&text)
+        {
+            let assets = database
+                .assets
+                .into_iter()
+                .filter(|asset| asset.path.is_file())
+                .collect::<Vec<_>>();
+            if !assets.is_empty() {
+                return Ok(assets);
+            }
+        }
+        self.rebuild_symbol_database()
+    }
+
+    /// Scan configured core, pack, and custom asset trees and persist the
+    /// metadata that drives the symbol gallery and renderer controls.
+    pub fn rebuild_symbol_database(&self) -> Result<Vec<AssetInfo>> {
+        let assets = self.all_assets();
+        let database = SymbolDatabase {
+            format_version: 1,
+            assets: assets.clone(),
+        };
+        let path = symbol_database_path();
+        let json = serde_json::to_vec_pretty(&database)
+            .map_err(|error| Error::format(error.to_string()))?;
+        fs::write(&path, json).map_err(|error| Error::format(error.to_string()))?;
+        Ok(assets)
+    }
+
     fn metadata_for(&self, path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
         let roots = [
             self.custom.as_deref(),
@@ -171,6 +210,24 @@ impl Resolver {
         }
         None
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SymbolDatabase {
+    format_version: u32,
+    assets: Vec<AssetInfo>,
+}
+
+pub fn symbol_database_path() -> PathBuf {
+    settings::config_path().with_file_name("miracledraft_symbol_database.json")
+}
+
+/// The core sprites extracted alongside this executable's source checkout.
+/// This is a safe fallback when an older saved setting points at a moved or
+/// deleted extraction directory.
+pub fn bundled_core_sprites() -> Option<PathBuf> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wonderdraft_files/sprites");
+    path.is_dir().then_some(path)
 }
 
 fn collect_assets(
@@ -316,5 +373,35 @@ mod tests {
             Some(texture.to_owned())
         );
         let _ = fs::remove_dir_all(extracted);
+    }
+
+    #[test]
+    fn lists_configured_core_and_custom_symbols() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!("wonderdraft-symbol-gallery-{stamp}"));
+        let core = root.join("sprites/symbols/core/castle.png");
+        let custom = root.join("assets/places/tower.webp");
+        fs::create_dir_all(core.parent().unwrap()).unwrap();
+        fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        fs::write(&core, b"placeholder").unwrap();
+        fs::write(&custom, b"placeholder").unwrap();
+
+        let resolver = Resolver::new(&Settings {
+            default_asset_folder: root.join("sprites").to_string_lossy().into_owned(),
+            custom_asset_folder: root.join("assets").to_string_lossy().into_owned(),
+            ..Settings::default()
+        });
+        let textures = resolver
+            .all_assets()
+            .into_iter()
+            .map(|asset| asset.texture)
+            .collect::<Vec<_>>();
+
+        assert!(textures.contains(&"res://sprites/symbols/core/castle".to_owned()));
+        assert!(textures.contains(&"user://assets/places/tower".to_owned()));
+        let _ = fs::remove_dir_all(root);
     }
 }

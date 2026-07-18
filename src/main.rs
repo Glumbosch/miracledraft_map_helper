@@ -13,6 +13,7 @@ use miracledraft_map_helper::{
     variant,
 };
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -20,6 +21,23 @@ use std::{
 
 const APP_NAME: &str = "Miracledraft Map Helper";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const DRAW_MODE_ICONS: &[(&str, &str, &[u8])] = &[
+    (
+        "normal",
+        "rubber-stamp.svg",
+        include_bytes!("../app_assets/icons/rubber-stamp.svg"),
+    ),
+    (
+        "sample_color",
+        "brush.svg",
+        include_bytes!("../app_assets/icons/brush.svg"),
+    ),
+    (
+        "custom_colors",
+        "palette.svg",
+        include_bytes!("../app_assets/icons/palette.svg"),
+    ),
+];
 
 struct App {
     text: String,
@@ -74,9 +92,24 @@ struct SvgRendererWindow {
     rows: Vec<svg_render::ClassSettings>,
     selected: usize,
     assets: Vec<miracledraft_map_helper::assets::AssetInfo>,
+    path_styles: Vec<PathStyleInfo>,
     preview: Option<egui::TextureHandle>,
     preview_texture: String,
     preview_background: usize,
+    created_map: Option<PathBuf>,
+    gallery_open: bool,
+    gallery_scale: f32,
+    gallery_background: usize,
+    gallery_search: String,
+    gallery_textures: HashMap<String, egui::TextureHandle>,
+    path_style_textures: HashMap<String, egui::TextureHandle>,
+    draw_mode_icons: HashMap<String, egui::TextureHandle>,
+}
+
+#[derive(Clone)]
+struct PathStyleInfo {
+    texture: String,
+    path: PathBuf,
 }
 
 struct LoadedMap {
@@ -121,6 +154,13 @@ struct FontChoice {
 impl Default for App {
     fn default() -> Self {
         let mut settings = settings::load();
+        let mut repaired_core_assets = false;
+        if !configured_directory(&settings.default_asset_folder)
+            && let Some(core_sprites) = miracledraft_map_helper::assets::bundled_core_sprites()
+        {
+            settings.default_asset_folder = core_sprites.to_string_lossy().into_owned();
+            repaired_core_assets = true;
+        }
         let wonderdraft_folder = settings::find_wonderdraft_folder(&settings.wonderdraft_folder);
         let setup_wizard_open = !settings.setup_completed;
         let wonderdraft_config = wonderdraft_folder
@@ -140,6 +180,9 @@ impl Default for App {
         }
         let cache_dir = PathBuf::from(&settings.cache_folder);
         let cache_size_bytes = settings::directory_size(&cache_dir).ok();
+        if repaired_core_assets {
+            let _ = settings::save(&settings);
+        }
         Self {
             text: String::new(),
             root_path: None,
@@ -489,7 +532,7 @@ impl App {
             DialogAction::SaveMap { .. } => self.save_to(&path),
             DialogAction::ExportSvg { .. } => self.export_svg_to(&path),
             DialogAction::ImportSvg => self.import_svg_from(&path),
-            DialogAction::RenderSvg => self.open_svg_renderer(path),
+            DialogAction::RenderSvg => self.open_svg_renderer(path, ctx),
             DialogAction::LoadRenderSettings => self.load_svg_render_settings(&path),
             DialogAction::SaveRenderSettings { .. } => self.save_svg_render_settings(&path),
             DialogAction::SaveRenderedMap { .. } => {
@@ -674,11 +717,16 @@ impl App {
         if settings::find_wonderdraft_folder(&self.settings.wonderdraft_folder).is_some() {
             self.reload_wonderdraft_config()?;
         }
+        let indexed = Resolver::new(&self.settings)
+            .rebuild_symbol_database()?
+            .len();
         self.settings.setup_completed = true;
         settings::save(&self.settings)?;
         self.cache_dir = cache;
         self.refresh_cache_size();
-        self.status = "Setup complete — open or drop a .wonderdraft_map file".into();
+        self.status = format!(
+            "Setup complete — symbol database contains {indexed} assets; open or drop a .wonderdraft_map file"
+        );
         Ok(())
     }
     fn show_setup_wizard(&mut self, ctx: &egui::Context) {
@@ -1199,19 +1247,30 @@ impl App {
         dialog("SVG imported", &self.status, false);
         Ok(())
     }
-    fn open_svg_renderer(&mut self, path: PathBuf) -> Result<()> {
+    fn open_svg_renderer(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<()> {
         let document = svg_render::analyze(&path)?;
         let rows = svg_render::default_settings(&document);
         let class_count = rows.len();
         let fallback = document.layer_fallback;
+        let resolver = Resolver::new(&self.settings);
+        let assets = resolver.symbol_database()?;
         self.svg_renderer = Some(SvgRendererWindow {
             document,
             rows,
             selected: 0,
-            assets: Resolver::new(&self.settings).all_assets(),
+            path_styles: path_styles(&resolver),
+            assets,
             preview: None,
             preview_texture: String::new(),
             preview_background: 2,
+            created_map: None,
+            gallery_open: false,
+            gallery_scale: 1.0,
+            gallery_background: 2,
+            gallery_search: String::new(),
+            gallery_textures: HashMap::new(),
+            path_style_textures: HashMap::new(),
+            draw_mode_icons: load_draw_mode_icons(&self.cache_dir, ctx),
         });
         self.status = if fallback {
             format!("SVG has no classes; found {class_count} Inkscape layers")
@@ -1239,6 +1298,18 @@ impl App {
         svg_render::save_csv(path, &window.rows)?;
         self.status = format!("Saved SVG render settings to {}", path.display());
         Ok(())
+    }
+    fn rebuild_symbol_database(&mut self) -> Result<usize> {
+        let assets = Resolver::new(&self.settings).rebuild_symbol_database()?;
+        let count = assets.len();
+        if let Some(window) = self.svg_renderer.as_mut() {
+            window.assets = assets;
+            window.gallery_textures.clear();
+            window.preview = None;
+            window.preview_texture.clear();
+        }
+        self.status = format!("Rebuilt symbol database with {count} assets");
+        Ok(count)
     }
     fn begin_svg_render(&mut self, path: PathBuf, ctx: &egui::Context) {
         if self.svg_render_job.is_some() {
@@ -1268,6 +1339,9 @@ impl App {
         };
         match receiver.try_recv() {
             Ok((path, Ok(summary))) => {
+                if let Some(window) = self.svg_renderer.as_mut() {
+                    window.created_map = Some(path.clone());
+                }
                 self.status = format!(
                     "Created {}: {} symbols, {} paths, {} territories, {} labels",
                     path.display(),
@@ -1332,28 +1406,214 @@ impl App {
             egui::TextureOptions::LINEAR,
         ));
     }
+    fn show_symbol_gallery(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        if !window.gallery_open {
+            return;
+        }
+        let mut selected_texture = None;
+        let still_open = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("svg-symbol-gallery-window"),
+            egui::ViewportBuilder::default()
+                .with_title("Symbol gallery")
+                .with_inner_size([1040.0, 760.0])
+                .with_min_inner_size([620.0, 440.0]),
+            |ui, _| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    return false;
+                }
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{} available core, pack, and custom symbols",
+                        window.assets.len()
+                    ));
+                    ui.separator();
+                    ui.label("Find");
+                    ui.text_edit_singleline(&mut window.gallery_search);
+                    ui.separator();
+                    ui.label("Tile scale");
+                    ui.add(
+                        egui::Slider::new(&mut window.gallery_scale, 0.5..=2.0).show_value(true),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Background");
+                    ui.selectable_value(&mut window.gallery_background, 0, "Black");
+                    ui.selectable_value(&mut window.gallery_background, 1, "White");
+                    ui.selectable_value(&mut window.gallery_background, 2, "Checkerboard");
+                    ui.small("Double-click a symbol to select it.");
+                });
+                ui.separator();
+                let query = window.gallery_search.to_lowercase();
+                let assets = window
+                    .assets
+                    .iter()
+                    .filter(|asset| {
+                        query.is_empty() || asset.texture.to_lowercase().contains(&query)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let tile = 116.0 * window.gallery_scale;
+                let columns = (ui.available_width() / tile).floor().max(1.0) as usize;
+                egui::ScrollArea::vertical()
+                    .id_salt("symbol-gallery-scroll")
+                    .show(ui, |ui| {
+                        egui::Grid::new("symbol-gallery-grid")
+                            .num_columns(columns)
+                            .spacing(egui::vec2(6.0, 8.0))
+                            .show(ui, |ui| {
+                                for row in assets.chunks(columns) {
+                                    for asset in row {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(tile, tile + 30.0),
+                                            egui::Sense::click(),
+                                        );
+                                        let image_rect = egui::Rect::from_min_size(
+                                            rect.min,
+                                            egui::vec2(tile, tile),
+                                        );
+                                        let is_selected = window
+                                            .rows
+                                            .get(window.selected)
+                                            .is_some_and(|row| row.symbol == asset.texture);
+                                        paint_preview_background(
+                                            ui.painter(),
+                                            image_rect,
+                                            window.gallery_background,
+                                        );
+                                        if let Some(texture) = gallery_texture(window, asset, ctx) {
+                                            let padding = (tile * 0.08).max(4.0);
+                                            let bounds = image_rect.shrink(padding);
+                                            ui.painter().image(
+                                                texture.id(),
+                                                fit_rect(bounds, texture.size_vec2()),
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                egui::Color32::WHITE,
+                                            );
+                                        } else {
+                                            ui.painter().text(
+                                                image_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "Preview\nunavailable",
+                                                egui::FontId::proportional(12.0),
+                                                egui::Color32::GRAY,
+                                            );
+                                        }
+                                        if let Some(icon) =
+                                            window.draw_mode_icons.get(&asset.draw_mode)
+                                        {
+                                            let icon_rect = egui::Rect::from_min_size(
+                                                image_rect.min + egui::vec2(4.0, 4.0),
+                                                egui::vec2(22.0, 22.0),
+                                            );
+                                            ui.painter().rect_filled(
+                                                icon_rect.expand(2.0),
+                                                3.0,
+                                                egui::Color32::from_black_alpha(180),
+                                            );
+                                            ui.painter().image(
+                                                icon.id(),
+                                                icon_rect,
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                egui::Color32::WHITE,
+                                            );
+                                        }
+                                        let label = asset
+                                            .texture
+                                            .rsplit('/')
+                                            .next()
+                                            .unwrap_or(&asset.texture);
+                                        ui.painter().text(
+                                            egui::pos2(rect.center().x, rect.max.y - 2.0),
+                                            egui::Align2::CENTER_BOTTOM,
+                                            truncate_label(label, 19),
+                                            egui::FontId::proportional(12.0),
+                                            ui.visuals().text_color(),
+                                        );
+                                        if is_selected {
+                                            ui.painter().rect_stroke(
+                                                rect.shrink(1.0),
+                                                4.0,
+                                                egui::Stroke::new(
+                                                    3.0,
+                                                    egui::Color32::from_rgb(80, 190, 255),
+                                                ),
+                                                egui::StrokeKind::Inside,
+                                            );
+                                            ui.painter().text(
+                                                rect.min + egui::vec2(6.0, 5.0),
+                                                egui::Align2::LEFT_TOP,
+                                                "Selected",
+                                                egui::FontId::proportional(12.0),
+                                                egui::Color32::from_rgb(80, 190, 255),
+                                            );
+                                        }
+                                        if response.double_clicked() {
+                                            selected_texture = Some(asset.texture.clone());
+                                        }
+                                        response.on_hover_text(&asset.texture);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                true
+            },
+        );
+        if !still_open {
+            window.gallery_open = false;
+        }
+        if let Some(texture) = selected_texture {
+            if let Some(row) = window.rows.get_mut(window.selected) {
+                row.symbol = texture;
+            }
+            window.gallery_open = false;
+            self.update_svg_symbol_preview(ctx);
+        }
+    }
     fn show_svg_renderer(&mut self, ctx: &egui::Context) {
         let Some(window) = self.svg_renderer.as_mut() else {
             return;
         };
-        let mut open = true;
         let mut load_csv = false;
         let mut save_csv = false;
         let mut render_map = false;
+        let mut load_created_map = false;
         let mut preview_changed = false;
         let mut propagated_name: Option<(usize, String)> = None;
-        egui::Window::new("Render SVG as new Wonderdraft map")
-            .open(&mut open)
-            .default_width(920.0)
-            .default_height(720.0)
-            .resizable(true)
-            .show(ctx, |ui| {
+        let still_open = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("svg-renderer-window"),
+            egui::ViewportBuilder::default()
+                .with_title("Render SVG as new Wonderdraft map")
+                .with_inner_size([920.0, 720.0])
+                .with_min_inner_size([680.0, 500.0]),
+            |ui, _| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    return false;
+                }
                 ui.label(format!("{} × {} map pixels — {}", window.document.width, window.document.height, if window.document.layer_fallback { "using Inkscape layers as classes" } else { "using SVG classes" }));
                 ui.horizontal(|ui| {
                     if ui.button("Load settings CSV…").clicked() { load_csv = true; }
                     if ui.button("Save settings CSV…").clicked() { save_csv = true; }
                     ui.separator();
                     if ui.add_enabled(self.svg_render_job.is_none(), egui::Button::new("Create .wonderdraft_map…")).clicked() { render_map = true; }
+                    if ui
+                        .add_enabled(
+                            window.created_map.is_some() && self.map_load.is_none(),
+                            egui::Button::new("Load created .wonderdraft_map"),
+                        )
+                        .clicked()
+                    {
+                        load_created_map = true;
+                    }
                     if self.svg_render_job.is_some() { ui.spinner(); ui.label("Rendering…"); }
                 });
                 ui.separator();
@@ -1370,6 +1630,9 @@ impl App {
                     columns[1].heading("Translation settings");
                     let selected = window.selected;
                     let assets = &window.assets;
+                    let draw_mode_icons = &window.draw_mode_icons;
+                    let path_styles = &window.path_styles;
+                    let path_style_textures = &mut window.path_style_textures;
                     let preview = &window.preview;
                     let preview_background = &mut window.preview_background;
                     if let Some(row) = window.rows.get_mut(selected) {
@@ -1396,6 +1659,7 @@ impl App {
                                 svg_render::Category::Symbol => {
                                     ui.label("Wonderdraft symbol");
                                     if ui.text_edit_singleline(&mut row.symbol).changed() { preview_changed=true; }
+                                    if ui.button("Symbol gallery…").clicked() { window.gallery_open = true; }
                                     ui.menu_button("Matching symbols…", |ui| {
                                         let query=row.symbol.to_lowercase();
                                         let mut shown=0;
@@ -1409,15 +1673,55 @@ impl App {
                                             if shown==0 { ui.label("No matching configured assets"); }
                                         });
                                     });
-                                    ui.add(egui::Slider::new(&mut row.symbol_scale, 0.01..=10.).logarithmic(true).text("Scale"));
-                                    color_control(ui, "Tint / sample color", &mut row.tint);
+                                    ui.add(
+                                        egui::Slider::new(&mut row.symbol_scale, 0.0..=100.0)
+                                            .clamping(egui::SliderClamping::Never)
+                                            .text("Scale"),
+                                    );
+                                    ui.small("The numeric value is editable and may be outside 0–100.");
+                                    let draw_mode = assets
+                                        .iter()
+                                        .find(|asset| asset.texture == row.symbol)
+                                        .map(|asset| asset.draw_mode.as_str())
+                                        .unwrap_or("normal");
+                                    ui.horizontal(|ui| {
+                                        ui.label("Draw mode");
+                                        if let Some(icon) = draw_mode_icons.get(draw_mode) {
+                                            ui.add(egui::Image::new(icon).fit_to_exact_size(egui::vec2(20.0, 20.0)));
+                                        }
+                                        ui.label(draw_mode_label(draw_mode));
+                                    });
+                                    match draw_mode {
+                                        "sample_color" => color_control(ui, "Tint / sample color", &mut row.tint),
+                                        "custom_colors" => {
+                                            color_control(ui, "Custom color 1", &mut row.custom_colors[0]);
+                                            color_control(ui, "Custom color 2", &mut row.custom_colors[1]);
+                                            color_control(ui, "Custom color 3", &mut row.custom_colors[2]);
+                                        }
+                                        _ => {
+                                            ui.small("Normal symbols use their original colors.");
+                                        }
+                                    }
                                     ui.horizontal(|ui| { ui.label("Preview background"); ui.selectable_value(preview_background,0,"Black"); ui.selectable_value(preview_background,1,"White"); ui.selectable_value(preview_background,2,"Checkerboard"); });
                                     let (rect, _) = ui.allocate_exact_size(egui::vec2(260.,220.), egui::Sense::hover());
                                     paint_preview_background(ui.painter(), rect, *preview_background);
                                     if let Some(texture)=preview { ui.put(rect.shrink(8.), egui::Image::new(texture).fit_to_exact_size(rect.shrink(8.).size())); } else { ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,"Preview unavailable\n(select a PNG/WebP/JPEG symbol)",egui::FontId::proportional(14.),egui::Color32::GRAY); }
                                 }
                                 svg_render::Category::Path | svg_render::Category::Territory => {
-                                    ui.horizontal(|ui| { ui.label(if row.category==svg_render::Category::Path {"Path style"} else {"Border style"}); ui.text_edit_singleline(&mut row.path_style); });
+                                    egui::ComboBox::from_label(if row.category==svg_render::Category::Path {"Path style"} else {"Border style"})
+                                        .selected_text(path_style_label(&row.path_style))
+                                        .show_ui(ui, |ui| {
+                                            for style in path_styles {
+                                                ui.horizontal(|ui| {
+                                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(110.0, 24.0), egui::Sense::hover());
+                                                    ui.painter().rect_filled(rect, 2.0, egui::Color32::from_gray(35));
+                                                    if let Some(texture) = path_style_texture(path_style_textures, style, ctx) {
+                                                        ui.painter().image(texture.id(), rect.shrink2(egui::vec2(3.0, 5.0)), egui::Rect::from_min_max(egui::pos2(0.0,0.0),egui::pos2(1.0,1.0)), egui::Color32::WHITE);
+                                                    }
+                                                    if ui.selectable_label(row.path_style == style.texture, path_style_label(&style.texture)).clicked() { row.path_style = style.texture.clone(); }
+                                                });
+                                            }
+                                        });
                                     color_control(ui,"Color",&mut row.path_color);
                                     ui.add(egui::Slider::new(&mut row.width,0.1..=100.).text("Width"));
                                 }
@@ -1434,7 +1738,9 @@ impl App {
                         });
                     }
                 });
-            });
+                true
+            },
+        );
         if let Some((selected, value)) = propagated_name {
             for next in window.rows.iter_mut().skip(selected + 1) {
                 if next.name_attribute == "map:svgname" {
@@ -1442,7 +1748,7 @@ impl App {
                 }
             }
         }
-        if !open {
+        if !still_open {
             self.svg_renderer = None;
             return;
         }
@@ -1458,6 +1764,9 @@ impl App {
             .file_stem()
             .map(|v| format!("{}.wonderdraft_map", v.to_string_lossy()))
             .unwrap_or_else(|| "rendered_svg.wonderdraft_map".into());
+        let created_map_to_load = load_created_map
+            .then(|| window.created_map.clone())
+            .flatten();
         if preview_changed {
             self.update_svg_symbol_preview(ctx);
         }
@@ -1479,6 +1788,9 @@ impl App {
                 },
                 ctx,
             );
+        }
+        if let Some(path) = created_map_to_load {
+            self.begin_map_load(path, ctx);
         }
     }
     fn export_image_to(&mut self, index: usize, path: &Path) -> Result<()> {
@@ -1703,6 +2015,7 @@ impl eframe::App for App {
             self.begin_map_load(path, &ctx);
         }
         self.show_svg_renderer(&ctx);
+        self.show_symbol_gallery(&ctx);
         egui::Panel::right("images")
             .resizable(true)
             .default_size(280.)
@@ -1948,6 +2261,18 @@ impl eframe::App for App {
                     {
                         self.begin_core_asset_setup(&ctx);
                     }
+                    ui.horizontal(|ui| {
+                        if ui.button("Rebuild symbol database").clicked() {
+                            match self.rebuild_symbol_database() {
+                                Ok(count) => self.status = format!("Rebuilt symbol database with {count} assets"),
+                                Err(error) => self.fail("Could not rebuild symbol database", error),
+                            }
+                        }
+                        ui.small(format!(
+                            "Database: {}",
+                            miracledraft_map_helper::assets::symbol_database_path().display()
+                        ));
+                    });
 
                     ui.separator();
                     ui.heading("Cache");
@@ -2237,6 +2562,163 @@ fn paint_preview_background(painter: &egui::Painter, rect: egui::Rect, backgroun
         egui::Stroke::new(1.0, egui::Color32::GRAY),
         egui::StrokeKind::Inside,
     );
+}
+
+fn gallery_texture(
+    window: &mut SvgRendererWindow,
+    asset: &miracledraft_map_helper::assets::AssetInfo,
+    ctx: &egui::Context,
+) -> Option<egui::TextureHandle> {
+    if let Some(texture) = window.gallery_textures.get(&asset.texture) {
+        return Some(texture.clone());
+    }
+    let image = image::open(&asset.path)
+        .ok()?
+        .thumbnail(128, 128)
+        .to_rgba8();
+    let texture = ctx.load_texture(
+        format!("symbol-gallery:{}", asset.texture),
+        egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    window
+        .gallery_textures
+        .insert(asset.texture.clone(), texture.clone());
+    Some(texture)
+}
+
+fn path_styles(resolver: &Resolver) -> Vec<PathStyleInfo> {
+    let mut roots = Vec::new();
+    if let Some(sprites) = &resolver.default
+        && let Some(root) = sprites.parent()
+    {
+        roots.push(root.join("textures/paths"));
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wonderdraft_files/textures/paths"));
+    let mut styles = Vec::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file()
+                || !path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("png"))
+            {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            styles.push(PathStyleInfo {
+                texture: format!("res://textures/paths/{stem}"),
+                path,
+            });
+        }
+    }
+    styles.sort_by(|left, right| left.texture.cmp(&right.texture));
+    styles.dedup_by(|left, right| left.texture == right.texture);
+    styles
+}
+
+fn path_style_texture(
+    textures: &mut HashMap<String, egui::TextureHandle>,
+    style: &PathStyleInfo,
+    ctx: &egui::Context,
+) -> Option<egui::TextureHandle> {
+    if let Some(texture) = textures.get(&style.texture) {
+        return Some(texture.clone());
+    }
+    let image = image::open(&style.path).ok()?.thumbnail(220, 48).to_rgba8();
+    let texture = ctx.load_texture(
+        format!("path-style:{}", style.texture),
+        egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    textures.insert(style.texture.clone(), texture.clone());
+    Some(texture)
+}
+
+fn path_style_label(texture: &str) -> String {
+    texture
+        .rsplit('/')
+        .next()
+        .unwrap_or(texture)
+        .trim_start_matches("path_")
+        .replace('_', " ")
+}
+
+fn draw_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "sample_color" => "Sample color",
+        "custom_colors" => "Three custom colors",
+        _ => "Normal",
+    }
+}
+
+fn load_draw_mode_icons(
+    cache_dir: &Path,
+    ctx: &egui::Context,
+) -> HashMap<String, egui::TextureHandle> {
+    let _ = fs::create_dir_all(cache_dir);
+    let mut icons = HashMap::new();
+    for (mode, name, bytes) in DRAW_MODE_ICONS {
+        let source = cache_dir.join(format!("draw_mode_{mode}_{name}"));
+        if fs::write(&source, bytes).is_err() {
+            continue;
+        }
+        let output = cache_dir.join(format!("draw_mode_{mode}.png"));
+        if !output.is_file() && svg_render::render_preview(&source, &output, 64, 64).is_err() {
+            continue;
+        }
+        let Ok(image) = image::open(&output) else {
+            continue;
+        };
+        let image = image.to_rgba8();
+        icons.insert(
+            (*mode).into(),
+            ctx.load_texture(
+                format!("draw-mode-{mode}"),
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width() as usize, image.height() as usize],
+                    image.as_raw(),
+                ),
+                egui::TextureOptions::LINEAR,
+            ),
+        );
+    }
+    icons
+}
+
+fn fit_rect(bounds: egui::Rect, source_size: egui::Vec2) -> egui::Rect {
+    let scale = (bounds.width() / source_size.x)
+        .min(bounds.height() / source_size.y)
+        .min(1.0);
+    egui::Rect::from_center_size(bounds.center(), source_size * scale)
+}
+
+fn truncate_label(value: &str, max_characters: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_characters {
+        value.to_owned()
+    } else {
+        format!(
+            "{}…",
+            value
+                .chars()
+                .take(max_characters.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
 }
 
 fn format_byte_size(bytes: u64) -> String {

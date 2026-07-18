@@ -91,6 +91,8 @@ pub struct ClassSettings {
     pub symbol: String,
     pub symbol_scale: f32,
     pub tint: [u8; 4],
+    #[serde(default = "default_custom_colors")]
+    pub custom_colors: [[u8; 4]; 3],
     pub path_style: String,
     pub path_color: [u8; 4],
     pub width: f32,
@@ -108,6 +110,7 @@ impl ClassSettings {
             symbol: String::new(),
             symbol_scale: 1.,
             tint: [255; 4],
+            custom_colors: default_custom_colors(),
             path_style: "res://textures/paths/path_blended".into(),
             path_color: [0, 0, 0, 255],
             width: 4.,
@@ -118,6 +121,10 @@ impl ClassSettings {
     }
 }
 
+fn default_custom_colors() -> [[u8; 4]; 3] {
+    [[3, 37, 119, 222], [38, 191, 66, 227], [138, 30, 30, 208]]
+}
+
 #[derive(Clone, Debug)]
 pub struct Document {
     pub source: PathBuf,
@@ -125,6 +132,7 @@ pub struct Document {
     pub height: u32,
     pub classes: Vec<String>,
     pub layer_fallback: bool,
+    layer_ids: HashMap<String, Vec<String>>,
     instances: Vec<Instance>,
 }
 
@@ -136,6 +144,7 @@ struct Instance {
     points: Vec<(f64, f64)>,
     center: (f64, f64),
     has_fill: bool,
+    has_nodes: bool,
 }
 
 #[derive(Clone)]
@@ -144,6 +153,7 @@ struct ParseFrame {
     layer: Option<String>,
     classes: Vec<String>,
     symbol: Option<String>,
+    hidden: bool,
 }
 
 pub fn analyze(path: &Path) -> Result<Document> {
@@ -154,23 +164,29 @@ pub fn analyze(path: &Path) -> Result<Document> {
         layer: None,
         classes: Vec::new(),
         symbol: None,
+        hidden: false,
     }];
     let mut class_names = HashSet::new();
     let mut layers = HashSet::new();
+    let mut layer_ids: HashMap<String, Vec<String>> = HashMap::new();
     let mut pending = Vec::new();
     let mut width = None;
     let mut height = None;
     let mut view_box = None;
+    let mut root_svg_seen = false;
     let mut symbol_bounds: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
     loop {
-        let event = reader
+        let xml_event = reader
             .read_event()
             .map_err(|e| Error::format(e.to_string()))?;
-        match event {
-            Event::Start(ref event) | Event::Empty(ref event) => {
+        match &xml_event {
+            Event::Start(event) | Event::Empty(event) => {
+                let is_container = matches!(&xml_event, Event::Start(_));
                 let tag = String::from_utf8_lossy(event.local_name().as_ref()).into_owned();
                 let attrs = attributes(event);
-                if tag == "svg" && width.is_none() {
+                let is_root_svg = tag == "svg" && !root_svg_seen;
+                if is_root_svg {
+                    root_svg_seen = true;
                     width = attribute(&attrs, "width").and_then(parse_length);
                     height = attribute(&attrs, "height").and_then(parse_length);
                     view_box = attribute(&attrs, "viewBox").and_then(parse_view_box);
@@ -180,11 +196,16 @@ pub fn analyze(path: &Path) -> Result<Document> {
                     layer: None,
                     classes: Vec::new(),
                     symbol: None,
+                    hidden: false,
                 });
-                let matrix = multiply(
-                    parent.matrix,
-                    parse_transform(attribute(&attrs, "transform")),
-                );
+                let element_transform = parse_transform(attribute(&attrs, "transform"));
+                let nested_viewport = if tag == "svg" && !is_root_svg {
+                    svg_viewport_matrix(&attrs)
+                } else {
+                    IDENTITY
+                };
+                let matrix = multiply(parent.matrix, multiply(element_transform, nested_viewport));
+                let hidden = parent.hidden || is_invisible(&attrs);
                 let is_layer = attribute(&attrs, "groupmode").is_some_and(|value| value == "layer");
                 let own_layer = is_layer.then(|| {
                     attribute(&attrs, "label")
@@ -192,6 +213,12 @@ pub fn analyze(path: &Path) -> Result<Document> {
                         .unwrap_or("unnamed layer")
                         .to_owned()
                 });
+                if let (Some(layer_name), Some(id)) = (&own_layer, attribute(&attrs, "id")) {
+                    layer_ids
+                        .entry(layer_name.clone())
+                        .or_default()
+                        .push(id.to_owned());
+                }
                 let layer = own_layer.or(parent.layer);
                 if let Some(layer) = &layer {
                     layers.insert(layer.clone());
@@ -226,7 +253,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
                         .or_default()
                         .extend([(x, y), (x + w, y + h)]);
                 }
-                if is_drawable(&tag) {
+                if is_drawable(&tag) && !hidden {
                     if let Some(id) = &current_symbol {
                         let definition_points = local_points(&tag, &attrs, &HashMap::new())
                             .into_iter()
@@ -238,12 +265,13 @@ pub fn analyze(path: &Path) -> Result<Document> {
                     }
                     pending.push((tag, attrs, matrix, layer.clone(), active_classes.clone()));
                 }
-                if matches!(event, quick_xml::events::BytesStart { .. }) {
+                if is_container {
                     stack.push(ParseFrame {
                         matrix,
                         layer,
                         classes: active_classes,
                         symbol: current_symbol,
+                        hidden,
                     });
                 }
             }
@@ -298,6 +326,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
                 points,
                 center,
                 has_fill,
+                has_nodes: matches!(tag.as_str(), "path" | "polyline" | "polygon" | "line"),
             });
         }
     }
@@ -313,6 +342,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
         height,
         classes,
         layer_fallback,
+        layer_ids,
         instances,
     })
 }
@@ -427,11 +457,10 @@ pub fn render(
                 first
             };
             match row.category {
-                Category::Symbol
-                    if !row.symbol.is_empty()
-                        && inside(instance.center, document.width, document.height) =>
-                {
-                    symbols.push(symbol_record(row, instance, resolver))
+                Category::Symbol if !row.symbol.is_empty() => {
+                    for position in symbol_positions(instance, document.width, document.height) {
+                        symbols.push(symbol_record_at(row, instance, position, resolver));
+                    }
                 }
                 Category::Path if intersects(&instance.points, document.width, document.height) => {
                     paths.push(path_record(row, instance))
@@ -661,11 +690,16 @@ fn image_value(image: RgbaImage) -> Value {
         )],
     }
 }
-fn symbol_record(row: &ClassSettings, instance: &Instance, resolver: &Resolver) -> Value {
+fn symbol_record_at(
+    row: &ClassSettings,
+    instance: &Instance,
+    position: (f64, f64),
+    resolver: &Resolver,
+) -> Value {
     let mut record = Value::dict();
     let asset = resolver.asset_info(&row.symbol);
     let (_, _, angle, mirror) = matrix_parts(instance.matrix);
-    record.set("position", vec2(instance.center.0, instance.center.1));
+    record.set("position", vec2(position.0, position.1));
     record.set(
         "scale",
         vec2(row.symbol_scale as f64, row.symbol_scale as f64),
@@ -684,7 +718,30 @@ fn symbol_record(row: &ClassSettings, instance: &Instance, resolver: &Resolver) 
     );
     record.set("outline_width", Value::Real(0.));
     record.set("outline_color", color([255; 4]));
-    record.set("sample", color(row.tint));
+    record.set(
+        "radius",
+        asset
+            .as_ref()
+            .map_or(Value::Nil, |asset| Value::Real(asset.base_radius)),
+    );
+    // Wonderdraft expects these keys on every symbol, including normal stamps.
+    // Draw modes only replace the values that they actively use.
+    record.set("custom_color_mode", Value::Nil);
+    record.set("custom_colors", Value::Nil);
+    record.set("sample", Value::Nil);
+    match asset.as_ref().map(|asset| asset.draw_mode.as_str()) {
+        Some("sample_color") => {
+            record.set("sample", color(row.tint));
+        }
+        Some("custom_colors") => {
+            record.set("custom_color_mode", Value::Int(1));
+            record.set(
+                "custom_colors",
+                Value::Array(row.custom_colors.into_iter().map(color).collect()),
+            );
+        }
+        _ => {}
+    }
     record
 }
 fn path_record(row: &ClassSettings, instance: &Instance) -> Value {
@@ -746,11 +803,19 @@ fn label_record(row: &ClassSettings, text: String, position: (f64, f64)) -> Valu
 
 fn raster_css(document: &Document, row: &ClassSettings) -> String {
     let target = if document.layer_fallback {
-        format!(
-            "[inkscape\\:label=\"{}\"],#{}",
-            css_string(&row.class_name),
-            css_ident(&row.class_name)
-        )
+        let mut selectors = vec![format!(
+            "[inkscape\\:label=\"{}\"]",
+            css_string(&row.class_name)
+        )];
+        selectors.extend(
+            document
+                .layer_ids
+                .get(&row.class_name)
+                .into_iter()
+                .flatten()
+                .map(|id| format!("#{}", css_ident(id))),
+        );
+        selectors.join(",")
     } else {
         format!("[class~=\"{}\"]", css_string(&row.class_name))
     };
@@ -768,6 +833,9 @@ fn raster_css(document: &Document, row: &ClassSettings) -> String {
         }
         _ => {}
     }
+    // The isolation rule above makes the selected layer visible. Re-apply
+    // authored invisibility afterwards so hidden elements are never painted.
+    style.push_str(" [display=\"none\"],[display=\"none\"] *,[visibility=\"hidden\"],[visibility=\"hidden\"] *,[style*=\"display:none\"],[style*=\"display:none\"] * ,[style*=\"display: none\"],[style*=\"display: none\"] * ,[style*=\"visibility:hidden\"],[style*=\"visibility:hidden\"] * ,[style*=\"visibility: hidden\"],[style*=\"visibility: hidden\"] *{display:none!important;visibility:hidden!important}");
     style
 }
 fn render_external(source: &Path, output: &Path, width: u32, height: u32) -> Result<()> {
@@ -889,6 +957,13 @@ fn presentation<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str
         })
         .or_else(|| attribute(attrs, name))
 }
+fn is_invisible(attrs: &[(String, String)]) -> bool {
+    ["display", "visibility"].into_iter().any(|name| {
+        presentation(attrs, name).is_some_and(|value| {
+            value.trim().eq_ignore_ascii_case("none") || value.trim().eq_ignore_ascii_case("hidden")
+        })
+    })
+}
 fn is_drawable(tag: &str) -> bool {
     matches!(
         tag,
@@ -909,6 +984,37 @@ fn parse_view_box(value: &str) -> Option<(f64, f64, f64, f64)> {
         .filter_map(|v| v.parse().ok())
         .collect::<Vec<_>>();
     (v.len() == 4).then(|| (v[0], v[1], v[2], v[3]))
+}
+/// Matrix from a nested SVG's viewBox coordinate system into its parent.
+/// SVGs commonly use a small page-sized outer viewport around a large map
+/// coordinate system, so this conversion must happen before child transforms.
+fn svg_viewport_matrix(attrs: &[(String, String)]) -> Matrix {
+    let value = |name, default| {
+        attribute(attrs, name)
+            .and_then(parse_length)
+            .unwrap_or(default)
+    };
+    let x = value("x", 0.);
+    let y = value("y", 0.);
+    let Some((vx, vy, vw, vh)) = attribute(attrs, "viewBox").and_then(parse_view_box) else {
+        return [1., 0., 0., 1., x, y];
+    };
+    let width = value("width", vw);
+    let height = value("height", vh);
+    let sx = width / vw.max(f64::EPSILON);
+    let sy = height / vh.max(f64::EPSILON);
+    if attribute(attrs, "preserveAspectRatio").is_some_and(|value| value.contains("none")) {
+        return [sx, 0., 0., sy, x - vx * sx, y - vy * sy];
+    }
+    let scale = sx.min(sy);
+    [
+        scale,
+        0.,
+        0.,
+        scale,
+        x + (width - vw * scale) / 2. - vx * scale,
+        y + (height - vh * scale) / 2. - vy * scale,
+    ]
 }
 fn multiply(l: Matrix, r: Matrix) -> Matrix {
     let [a, b, c, d, e, f] = l;
@@ -1059,6 +1165,27 @@ fn matrix_parts(m: Matrix) -> (f64, f64, f64, bool) {
         m[0] * m[3] - m[1] * m[2] < 0.,
     )
 }
+/// Point-like elements receive one symbol at their centre. For SVG path-like
+/// geometry, each distinct visible node becomes a separate symbol placement.
+fn symbol_positions(instance: &Instance, width: u32, height: u32) -> Vec<(f64, f64)> {
+    if !instance.has_nodes {
+        return inside(instance.center, width, height)
+            .then_some(instance.center)
+            .into_iter()
+            .collect();
+    }
+    let mut positions = Vec::new();
+    for point in instance.points.iter().copied() {
+        if inside(point, width, height)
+            && !positions.iter().any(|existing: &(f64, f64)| {
+                (existing.0 - point.0).abs() < 1e-6 && (existing.1 - point.1).abs() < 1e-6
+            })
+        {
+            positions.push(point);
+        }
+    }
+    positions
+}
 fn inside((x, y): (f64, f64), w: u32, h: u32) -> bool {
     x >= 0. && y >= 0. && x <= w as f64 && y <= h as f64
 }
@@ -1160,6 +1287,7 @@ fn safe_name(v: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::Settings;
     #[test]
     fn finds_classes_transforms_and_viewport() {
         let dir = std::env::temp_dir().join("svg-render-analysis-test.svg");
@@ -1194,6 +1322,198 @@ mod tests {
         let _ = fs::remove_file(p);
     }
     #[test]
+    fn selected_symbol_is_placed_at_each_distinct_path_node() {
+        let p = std::env::temp_dir().join("svg-render-symbol-nodes.svg");
+        fs::write(
+            &p,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><path class="route" d="M10 10 L50 10 L50 50 Z"/><circle class="marker" cx="75" cy="75" r="3"/></svg>"#,
+        )
+        .unwrap();
+        let document = analyze(&p).unwrap();
+        let route = document
+            .instances
+            .iter()
+            .find(|instance| instance.class_name == "route")
+            .unwrap();
+        assert_eq!(symbol_positions(route, 100, 100).len(), 3);
+        let marker = document
+            .instances
+            .iter()
+            .find(|instance| instance.class_name == "marker")
+            .unwrap();
+        assert_eq!(symbol_positions(marker, 100, 100), vec![(75., 75.)]);
+        let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn nested_svg_viewbox_applies_before_child_transforms() {
+        let p = std::env::temp_dir().join("svg-render-nested-viewport.svg");
+        fs::write(
+            &p,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="840" height="770" viewBox="0 0 120 110"><svg x="3" y="3" width="94" height="94" viewBox="1000 2000 100 100"><circle class="place" cx="1050" cy="2050" r="1"/></svg></svg>"#,
+        )
+        .unwrap();
+        let document = analyze(&p).unwrap();
+        let center = document.instances[0].center;
+        assert!((center.0 - 350.).abs() < 0.01, "{center:?}");
+        assert!((center.1 - 350.).abs() < 0.01, "{center:?}");
+        let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn invisible_svg_elements_are_not_routed_or_rasterized() {
+        let p = std::env::temp_dir().join("svg-render-invisible-elements.svg");
+        fs::write(
+            &p,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><g class="places"><circle cx="4" cy="4" r="2"/><circle cx="8" cy="8" r="2" style="display: none"/><g visibility="hidden"><circle cx="12" cy="12" r="2"/></g></g></svg>"#,
+        )
+        .unwrap();
+        let document = analyze(&p).unwrap();
+        assert_eq!(
+            document
+                .instances
+                .iter()
+                .filter(|item| item.class_name == "places")
+                .count(),
+            1
+        );
+        let mut row = ClassSettings::new("places".into(), "map:svgname");
+        row.category = Category::Ground;
+        let css = raster_css(&document, &row);
+        assert!(css.contains("display:none!important"));
+        let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn layermap_layers_keep_all_visible_symbols_and_paint_layers() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles");
+        let source = fixtures.join("layermap.svg");
+        let document = analyze(&source).unwrap();
+        assert!(document.layer_fallback);
+        let visible_places = document
+            .instances
+            .iter()
+            .filter(|item| item.class_name == "places")
+            .filter(|item| inside(item.center, document.width, document.height))
+            .count();
+        assert_eq!(visible_places, 5, "{:#?}", document.instances);
+
+        let mut settings = default_settings(&document);
+        assert_eq!(
+            load_csv(
+                &fixtures.join("layermap_render_settings.csv"),
+                &mut settings
+            )
+            .unwrap(),
+            7
+        );
+        for (class_name, category) in [
+            ("ground_painting", Category::Ground),
+            ("land", Category::Landmass),
+            ("places", Category::Symbol),
+            ("rivvers", Category::Freshwater),
+            ("streets", Category::Path),
+            ("water_paiting", Category::WaterTint),
+        ] {
+            assert!(
+                settings
+                    .iter()
+                    .any(|row| row.class_name == class_name && row.category == category)
+            );
+        }
+        for (class_name, category, layer_id) in [
+            ("land", Category::Landmass, "layer5"),
+            ("rivvers", Category::Freshwater, "layer6"),
+        ] {
+            let mut row = ClassSettings::new(class_name.into(), "map:svgname");
+            row.category = category;
+            assert!(
+                raster_css(&document, &row).contains(&format!("#{layer_id}")),
+                "{class_name} must target its actual Inkscape layer id"
+            );
+        }
+
+        let expected = crate::godot_text::parse(
+            &fs::read_to_string(fixtures.join("layermap_map_data.txt")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            expected.get("map_width").and_then(Value::as_f64),
+            Some(1000.)
+        );
+        assert_eq!(
+            expected.get("map_height").and_then(Value::as_f64),
+            Some(1000.)
+        );
+        for (key, filename) in [
+            ("ground", ".ground.png"),
+            ("mask", ".mask.png"),
+            ("water_tint", ".water_tint.png"),
+        ] {
+            assert_eq!(expected.get(key).and_then(Value::as_str), Some(filename));
+        }
+        assert_eq!(
+            expected
+                .get("symbols")
+                .and_then(Value::as_array)
+                .map_or(0, |symbols| symbols.len()),
+            5
+        );
+        assert_eq!(
+            expected
+                .get("paths")
+                .and_then(Value::as_array)
+                .map_or(0, |paths| paths.len()),
+            1
+        );
+        assert_eq!(
+            expected
+                .get("labels")
+                .and_then(Value::as_array)
+                .map_or(0, |labels| labels.len()),
+            1
+        );
+        for filename in [
+            "layermap.ground.png",
+            "layermap.mask.png",
+            "layermap.water_tint.png",
+        ] {
+            let image = image::open(fixtures.join(filename)).unwrap().to_rgba8();
+            assert_eq!(image.dimensions(), (1000, 1000));
+            assert!(
+                image.pixels().any(|pixel| pixel[3] != 0),
+                "{filename} is empty"
+            );
+        }
+    }
+    #[test]
+    fn fullmap_attempt2_routes_transformed_nested_svg_symbols() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles");
+        let document = analyze(&fixtures.join("fullmap_attempt2.svg")).unwrap();
+        assert_eq!((document.width, document.height), (840, 770));
+        let mut settings = default_settings(&document);
+        assert_eq!(
+            load_csv(
+                &fixtures.join("fullmap_attempt2_render_settings.csv"),
+                &mut settings
+            )
+            .unwrap(),
+            58
+        );
+        let symbol_classes = settings
+            .iter()
+            .filter(|row| row.category == Category::Symbol)
+            .map(|row| row.class_name.as_str())
+            .collect::<HashSet<_>>();
+        let visible_symbols = document
+            .instances
+            .iter()
+            .filter(|instance| symbol_classes.contains(instance.class_name.as_str()))
+            .filter(|instance| inside(instance.center, document.width, document.height))
+            .count();
+        assert!(
+            visible_symbols > 0,
+            "no transformed symbols were in the viewport"
+        );
+    }
+    #[test]
     fn settings_csv_round_trip() {
         let p = std::env::temp_dir().join("svg-render-settings.csv");
         let mut rows = vec![ClassSettings::new("town, big".into(), "mapsvg:name")];
@@ -1203,5 +1523,51 @@ mod tests {
         assert_eq!(load_csv(&p, &mut target).unwrap(), 1);
         assert_eq!(target[0].category, Category::Symbol);
         let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn symbol_records_follow_draw_mode_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("svg-render-draw-mode-{}", std::process::id()));
+        let symbols = root.join("sprites/symbols/test");
+        fs::create_dir_all(&symbols).unwrap();
+        fs::write(symbols.join("custom.png"), b"placeholder").unwrap();
+        fs::write(
+            symbols.join(".wonderdraft_symbols"),
+            r#"{"custom":{"radius":64,"offset_x":0,"offset_y":0,"draw_mode":"custom_colors"}}"#,
+        )
+        .unwrap();
+        let resolver = Resolver::new(&Settings {
+            default_asset_folder: root.join("sprites").to_string_lossy().into_owned(),
+            ..Settings::default()
+        });
+        let mut row = ClassSettings::new("town".into(), "mapsvg:name");
+        row.symbol = "res://sprites/symbols/test/custom".into();
+        row.custom_colors = [[1, 2, 3, 255], [4, 5, 6, 255], [7, 8, 9, 255]];
+        let instance = Instance {
+            class_name: "town".into(),
+            attrs: vec![],
+            matrix: IDENTITY,
+            points: vec![],
+            center: (10., 20.),
+            has_fill: false,
+            has_nodes: false,
+        };
+        let record = symbol_record_at(&row, &instance, instance.center, &resolver);
+        assert!(matches!(
+            record.get("custom_color_mode"),
+            Some(Value::Int(1))
+        ));
+        assert!(
+            matches!(record.get("custom_colors"), Some(Value::Array(colors)) if colors.len() == 3)
+        );
+        assert!(matches!(record.get("sample"), Some(Value::Nil)));
+
+        row.symbol = "res://sprites/symbols/test/normal".into();
+        let normal = symbol_record_at(&row, &instance, instance.center, &resolver);
+        assert!(matches!(normal.get("custom_color_mode"), Some(Value::Nil)));
+        assert!(matches!(normal.get("custom_colors"), Some(Value::Nil)));
+        assert!(matches!(normal.get("sample"), Some(Value::Nil)));
+        assert!(matches!(normal.get("outline_width"), Some(Value::Real(width)) if *width == 0.0));
+        let _ = fs::remove_dir_all(root);
     }
 }
