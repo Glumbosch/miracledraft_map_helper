@@ -8,7 +8,7 @@ use miracledraft_map_helper::{
     images::{self, BinaryBlobs, Images},
     pck,
     settings::{self, Settings, WonderdraftConfig},
-    svg,
+    svg, svg_render,
     value::image_info,
     variant,
 };
@@ -65,6 +65,18 @@ struct App {
     focus_search: bool,
     pending_text_selection: Option<(usize, usize)>,
     section_choice: usize,
+    svg_renderer: Option<SvgRendererWindow>,
+    svg_render_job: Option<Receiver<(PathBuf, Result<svg_render::RenderSummary>)>>,
+}
+
+struct SvgRendererWindow {
+    document: svg_render::Document,
+    rows: Vec<svg_render::ClassSettings>,
+    selected: usize,
+    assets: Vec<miracledraft_map_helper::assets::AssetInfo>,
+    preview: Option<egui::TextureHandle>,
+    preview_texture: String,
+    preview_background: usize,
 }
 
 struct LoadedMap {
@@ -81,6 +93,10 @@ enum DialogAction {
     SaveMap { file_name: String },
     ExportSvg { file_name: String },
     ImportSvg,
+    RenderSvg,
+    LoadRenderSettings,
+    SaveRenderSettings { file_name: String },
+    SaveRenderedMap { file_name: String },
     ExportMapData { file_name: String },
     ExportImage { index: usize, file_name: String },
     ExportAllImages,
@@ -168,6 +184,8 @@ impl Default for App {
             focus_search: false,
             pending_text_selection: None,
             section_choice: 0,
+            svg_renderer: None,
+            svg_render_job: None,
         }
     }
 }
@@ -256,6 +274,20 @@ impl App {
                 DialogAction::ImportSvg => rfd::FileDialog::new()
                     .add_filter("SVG", &["svg"])
                     .pick_file(),
+                DialogAction::RenderSvg => rfd::FileDialog::new()
+                    .add_filter("SVG", &["svg"])
+                    .pick_file(),
+                DialogAction::LoadRenderSettings => rfd::FileDialog::new()
+                    .add_filter("CSV table", &["csv"])
+                    .pick_file(),
+                DialogAction::SaveRenderSettings { file_name } => rfd::FileDialog::new()
+                    .set_file_name(file_name)
+                    .add_filter("CSV table", &["csv"])
+                    .save_file(),
+                DialogAction::SaveRenderedMap { file_name } => rfd::FileDialog::new()
+                    .set_file_name(file_name)
+                    .add_filter("Wonderdraft map", &["wonderdraft_map"])
+                    .save_file(),
                 DialogAction::ExportMapData { file_name } => rfd::FileDialog::new()
                     .set_file_name(file_name)
                     .add_filter("Text", &["txt"])
@@ -457,6 +489,13 @@ impl App {
             DialogAction::SaveMap { .. } => self.save_to(&path),
             DialogAction::ExportSvg { .. } => self.export_svg_to(&path),
             DialogAction::ImportSvg => self.import_svg_from(&path),
+            DialogAction::RenderSvg => self.open_svg_renderer(path),
+            DialogAction::LoadRenderSettings => self.load_svg_render_settings(&path),
+            DialogAction::SaveRenderSettings { .. } => self.save_svg_render_settings(&path),
+            DialogAction::SaveRenderedMap { .. } => {
+                self.begin_svg_render(path, ctx);
+                return;
+            }
             DialogAction::ExportMapData { .. } => self.export_map_data_to(&path),
             DialogAction::ExportImage { index, .. } => self.export_image_to(index, &path),
             DialogAction::ExportAllImages => self.export_all_to(&path),
@@ -1160,6 +1199,288 @@ impl App {
         dialog("SVG imported", &self.status, false);
         Ok(())
     }
+    fn open_svg_renderer(&mut self, path: PathBuf) -> Result<()> {
+        let document = svg_render::analyze(&path)?;
+        let rows = svg_render::default_settings(&document);
+        let class_count = rows.len();
+        let fallback = document.layer_fallback;
+        self.svg_renderer = Some(SvgRendererWindow {
+            document,
+            rows,
+            selected: 0,
+            assets: Resolver::new(&self.settings).all_assets(),
+            preview: None,
+            preview_texture: String::new(),
+            preview_background: 2,
+        });
+        self.status = if fallback {
+            format!("SVG has no classes; found {class_count} Inkscape layers")
+        } else {
+            format!("Found {class_count} SVG classes")
+        };
+        Ok(())
+    }
+    fn load_svg_render_settings(&mut self, path: &Path) -> Result<()> {
+        let window = self
+            .svg_renderer
+            .as_mut()
+            .ok_or_else(|| Error::format("no SVG renderer is open"))?;
+        let count = svg_render::load_csv(path, &mut window.rows)?;
+        window.preview = None;
+        window.preview_texture.clear();
+        self.status = format!("Loaded settings for {count} SVG classes");
+        Ok(())
+    }
+    fn save_svg_render_settings(&mut self, path: &Path) -> Result<()> {
+        let window = self
+            .svg_renderer
+            .as_ref()
+            .ok_or_else(|| Error::format("no SVG renderer is open"))?;
+        svg_render::save_csv(path, &window.rows)?;
+        self.status = format!("Saved SVG render settings to {}", path.display());
+        Ok(())
+    }
+    fn begin_svg_render(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.svg_render_job.is_some() {
+            return;
+        }
+        let Some(window) = self.svg_renderer.as_ref() else {
+            return;
+        };
+        let document = window.document.clone();
+        let rows = window.rows.clone();
+        let resolver = Resolver::new(&self.settings);
+        let compressed = self.compressed;
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        let result_path = path.clone();
+        std::thread::spawn(move || {
+            let result = svg_render::render(&document, &rows, &resolver, &path, compressed);
+            let _ = sender.send((result_path, result));
+            repaint.request_repaint();
+        });
+        self.svg_render_job = Some(receiver);
+        self.status = "Rendering SVG layers and creating a new Wonderdraft map…".into();
+    }
+    fn poll_svg_render(&mut self) {
+        let Some(receiver) = self.svg_render_job.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok((path, Ok(summary))) => {
+                self.status = format!(
+                    "Created {}: {} symbols, {} paths, {} territories, {} labels",
+                    path.display(),
+                    summary.symbols,
+                    summary.paths,
+                    summary.territories,
+                    summary.labels
+                );
+                dialog("Wonderdraft map created", &self.status, false);
+            }
+            Ok((_, Err(error))) => self.fail("Could not render SVG to Wonderdraft map", error),
+            Err(TryRecvError::Empty) => self.svg_render_job = Some(receiver),
+            Err(TryRecvError::Disconnected) => self.fail(
+                "Could not render SVG",
+                "SVG render worker stopped unexpectedly",
+            ),
+        }
+    }
+    fn update_svg_symbol_preview(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        let Some(row) = window.rows.get(window.selected) else {
+            return;
+        };
+        if row.symbol == window.preview_texture {
+            return;
+        }
+        window.preview_texture = row.symbol.clone();
+        window.preview = None;
+        let Some(asset) = window
+            .assets
+            .iter()
+            .find(|asset| asset.texture == row.symbol)
+        else {
+            return;
+        };
+        let image = image::open(&asset.path).or_else(|original_error| {
+            let is_svg = asset
+                .path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+            if !is_svg {
+                return Err(original_error);
+            }
+            let preview_path = self
+                .cache_dir
+                .join(format!("svg_symbol_preview_{}.png", window.selected));
+            let _ = fs::remove_file(&preview_path);
+            svg_render::render_preview(&asset.path, &preview_path, 256, 256)
+                .map_err(|_| original_error)?;
+            image::open(preview_path)
+        });
+        let Ok(image) = image else { return };
+        let rgba = image.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        window.preview = Some(ctx.load_texture(
+            format!("svg-render-preview:{}", row.symbol),
+            color_image,
+            egui::TextureOptions::LINEAR,
+        ));
+    }
+    fn show_svg_renderer(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut load_csv = false;
+        let mut save_csv = false;
+        let mut render_map = false;
+        let mut preview_changed = false;
+        let mut propagated_name: Option<(usize, String)> = None;
+        egui::Window::new("Render SVG as new Wonderdraft map")
+            .open(&mut open)
+            .default_width(920.0)
+            .default_height(720.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.label(format!("{} × {} map pixels — {}", window.document.width, window.document.height, if window.document.layer_fallback { "using Inkscape layers as classes" } else { "using SVG classes" }));
+                ui.horizontal(|ui| {
+                    if ui.button("Load settings CSV…").clicked() { load_csv = true; }
+                    if ui.button("Save settings CSV…").clicked() { save_csv = true; }
+                    ui.separator();
+                    if ui.add_enabled(self.svg_render_job.is_none(), egui::Button::new("Create .wonderdraft_map…")).clicked() { render_map = true; }
+                    if self.svg_render_job.is_some() { ui.spinner(); ui.label("Rendering…"); }
+                });
+                ui.separator();
+                ui.columns(2, |columns| {
+                    columns[0].heading("Classes / layers");
+                    egui::ScrollArea::vertical().id_salt("svg-render-classes").show(&mut columns[0], |ui| {
+                        for (index, row) in window.rows.iter().enumerate() {
+                            if ui.selectable_label(window.selected == index, format!("{}  →  {}", row.class_name, row.category.label())).clicked() {
+                                window.selected = index;
+                                preview_changed = true;
+                            }
+                        }
+                    });
+                    columns[1].heading("Translation settings");
+                    let selected = window.selected;
+                    let assets = &window.assets;
+                    let preview = &window.preview;
+                    let preview_background = &mut window.preview_background;
+                    if let Some(row) = window.rows.get_mut(selected) {
+                        egui::ScrollArea::vertical().id_salt("svg-render-settings").show(&mut columns[1], |ui| {
+                            ui.strong(&row.class_name);
+                            egui::ComboBox::from_label("Category").selected_text(row.category.label()).show_ui(ui, |ui| {
+                                for category in svg_render::Category::ALL { ui.selectable_value(&mut row.category, category, category.label()); }
+                            });
+                            if row.category == svg_render::Category::Invisible { ui.small("Invisible elements are not written to the map."); return; }
+                            ui.horizontal(|ui| { ui.label("Name attribute"); if ui.text_edit_singleline(&mut row.name_attribute).changed() { propagated_name=Some((selected,row.name_attribute.clone())); } });
+                            ui.checkbox(&mut row.label.enabled, "Create label");
+                            if row.label.enabled {
+                                ui.indent("label-options", |ui| {
+                                    ui.horizontal(|ui| { ui.label("Font"); ui.text_edit_singleline(&mut row.label.font); });
+                                    ui.add(egui::Slider::new(&mut row.label.size, 4.0..=200.0).text("Size"));
+                                    color_control(ui, "Color", &mut row.label.color);
+                                    color_control(ui, "Outline", &mut row.label.outline_color);
+                                    ui.add(egui::Slider::new(&mut row.label.outline, 0.0..=20.0).text("Outline width"));
+                                    ui.horizontal(|ui| { ui.add(egui::DragValue::new(&mut row.label.offset_x).prefix("Offset X ")); ui.add(egui::DragValue::new(&mut row.label.offset_y).prefix("Offset Y ")); });
+                                });
+                            }
+                            ui.separator();
+                            match row.category {
+                                svg_render::Category::Symbol => {
+                                    ui.label("Wonderdraft symbol");
+                                    if ui.text_edit_singleline(&mut row.symbol).changed() { preview_changed=true; }
+                                    ui.menu_button("Matching symbols…", |ui| {
+                                        let query=row.symbol.to_lowercase();
+                                        let mut shown=0;
+                                        egui::ScrollArea::vertical().max_height(230.).show(ui, |ui| {
+                                            for asset in assets {
+                                                let label=asset.texture.rsplit('/').next().unwrap_or(&asset.texture);
+                                                if !query.is_empty() && !asset.texture.to_lowercase().contains(&query) { continue; }
+                                                if ui.button(label).on_hover_text(&asset.texture).clicked() { row.symbol=asset.texture.clone(); preview_changed=true; ui.close(); }
+                                                shown+=1; if shown>=250 { break; }
+                                            }
+                                            if shown==0 { ui.label("No matching configured assets"); }
+                                        });
+                                    });
+                                    ui.add(egui::Slider::new(&mut row.symbol_scale, 0.01..=10.).logarithmic(true).text("Scale"));
+                                    color_control(ui, "Tint / sample color", &mut row.tint);
+                                    ui.horizontal(|ui| { ui.label("Preview background"); ui.selectable_value(preview_background,0,"Black"); ui.selectable_value(preview_background,1,"White"); ui.selectable_value(preview_background,2,"Checkerboard"); });
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(260.,220.), egui::Sense::hover());
+                                    paint_preview_background(ui.painter(), rect, *preview_background);
+                                    if let Some(texture)=preview { ui.put(rect.shrink(8.), egui::Image::new(texture).fit_to_exact_size(rect.shrink(8.).size())); } else { ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,"Preview unavailable\n(select a PNG/WebP/JPEG symbol)",egui::FontId::proportional(14.),egui::Color32::GRAY); }
+                                }
+                                svg_render::Category::Path | svg_render::Category::Territory => {
+                                    ui.horizontal(|ui| { ui.label(if row.category==svg_render::Category::Path {"Path style"} else {"Border style"}); ui.text_edit_singleline(&mut row.path_style); });
+                                    color_control(ui,"Color",&mut row.path_color);
+                                    ui.add(egui::Slider::new(&mut row.width,0.1..=100.).text("Width"));
+                                }
+                                svg_render::Category::Ground | svg_render::Category::WaterTint => {
+                                    optional_color_control(ui,"Fill override",&mut row.fill_override);
+                                    optional_color_control(ui,"Border override",&mut row.border_override);
+                                    optional_width_control(ui,"Border width override",&mut row.border_width_override);
+                                    ui.small("‘Use SVG value’ preserves the element’s existing presentation value.");
+                                }
+                                svg_render::Category::Landmass => { ui.add(egui::Slider::new(&mut row.width,0.0..=100.).text("Black mask border width")); ui.small("Rendered black onto mask.png."); }
+                                svg_render::Category::Freshwater => { ui.small("Existing fill/stroke colors become red; explicit ‘none’ and opacity are preserved. Rendered after all landmass classes."); }
+                                svg_render::Category::Invisible => {}
+                            }
+                        });
+                    }
+                });
+            });
+        if let Some((selected, value)) = propagated_name {
+            for next in window.rows.iter_mut().skip(selected + 1) {
+                if next.name_attribute == "map:svgname" {
+                    next.name_attribute = value.clone();
+                }
+            }
+        }
+        if !open {
+            self.svg_renderer = None;
+            return;
+        }
+        let csv_file_name = window
+            .document
+            .source
+            .file_stem()
+            .map(|v| format!("{}_render_settings.csv", v.to_string_lossy()))
+            .unwrap_or_else(|| "svg_render_settings.csv".into());
+        let map_file_name = window
+            .document
+            .source
+            .file_stem()
+            .map(|v| format!("{}.wonderdraft_map", v.to_string_lossy()))
+            .unwrap_or_else(|| "rendered_svg.wonderdraft_map".into());
+        if preview_changed {
+            self.update_svg_symbol_preview(ctx);
+        }
+        if load_csv {
+            self.begin_dialog(DialogAction::LoadRenderSettings, ctx);
+        }
+        if save_csv {
+            self.begin_dialog(
+                DialogAction::SaveRenderSettings {
+                    file_name: csv_file_name,
+                },
+                ctx,
+            );
+        }
+        if render_map {
+            self.begin_dialog(
+                DialogAction::SaveRenderedMap {
+                    file_name: map_file_name,
+                },
+                ctx,
+            );
+        }
+    }
     fn export_image_to(&mut self, index: usize, path: &Path) -> Result<()> {
         let Some((key, value)) = self.images.get(index) else {
             return Ok(());
@@ -1220,6 +1541,7 @@ impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         self.poll_background_work(&ctx);
+        self.poll_svg_render();
         if ctx.input_mut(|input| {
             input.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL,
@@ -1318,6 +1640,9 @@ impl eframe::App for App {
                 if ui.button("Import SVG…").clicked() {
                     self.begin_dialog(DialogAction::ImportSvg, &ctx);
                 }
+                if ui.button("Render SVG…").clicked() {
+                    self.begin_dialog(DialogAction::RenderSvg, &ctx);
+                }
                 if ui.button("Export map data…").clicked() {
                     let file_name = self
                         .root_path
@@ -1377,6 +1702,7 @@ impl eframe::App for App {
         if let Some(path) = recent_selection {
             self.begin_map_load(path, &ctx);
         }
+        self.show_svg_renderer(&ctx);
         egui::Panel::right("images")
             .resizable(true)
             .default_size(280.)
@@ -1831,6 +2157,86 @@ fn remove_off_canvas_symbols(root: &mut Value, resolver: &Resolver) -> usize {
         max_x >= 0.0 && max_y >= 0.0 && min_x <= width && min_y <= height
     });
     before - symbols.len()
+}
+
+fn color_control(ui: &mut egui::Ui, label: &str, value: &mut [u8; 4]) {
+    let mut color = egui::Color32::from_rgba_unmultiplied(value[0], value[1], value[2], value[3]);
+    ui.horizontal(|ui| {
+        ui.label(label);
+        if ui.color_edit_button_srgba(&mut color).changed() {
+            *value = color.to_array();
+        }
+    });
+}
+
+fn optional_color_control(ui: &mut egui::Ui, label: &str, value: &mut Option<[u8; 4]>) {
+    let mut enabled = value.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut enabled, label).changed() {
+            *value = enabled.then_some([0, 0, 0, 255]);
+        }
+        if let Some(color) = value {
+            color_control(ui, "", color);
+        } else {
+            ui.small("Use SVG value");
+        }
+    });
+}
+
+fn optional_width_control(ui: &mut egui::Ui, label: &str, value: &mut Option<f32>) {
+    let mut enabled = value.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut enabled, label).changed() {
+            *value = enabled.then_some(1.0);
+        }
+        if let Some(width) = value {
+            ui.add(egui::DragValue::new(width).range(0.0..=100.0));
+        } else {
+            ui.small("Use SVG value");
+        }
+    });
+}
+
+fn paint_preview_background(painter: &egui::Painter, rect: egui::Rect, background: usize) {
+    if background < 2 {
+        painter.rect_filled(
+            rect,
+            3.0,
+            if background == 0 {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            },
+        );
+    } else {
+        let tile = 14.0;
+        let columns = (rect.width() / tile).ceil() as usize;
+        let rows = (rect.height() / tile).ceil() as usize;
+        for y in 0..rows {
+            for x in 0..columns {
+                let cell = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(x as f32 * tile, y as f32 * tile),
+                    egui::vec2(tile, tile),
+                )
+                .intersect(rect);
+                painter.rect_filled(
+                    cell,
+                    0.0,
+                    if (x + y) % 2 == 0 {
+                        egui::Color32::from_gray(205)
+                    } else {
+                        egui::Color32::from_gray(245)
+                    },
+                );
+            }
+        }
+    }
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, egui::Color32::GRAY),
+        egui::StrokeKind::Inside,
+    );
 }
 
 fn format_byte_size(bytes: u64) -> String {

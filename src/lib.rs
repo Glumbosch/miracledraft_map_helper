@@ -8,6 +8,7 @@ pub mod images;
 pub mod pck;
 pub mod settings;
 pub mod svg;
+pub mod svg_render;
 pub mod value;
 pub mod variant;
 

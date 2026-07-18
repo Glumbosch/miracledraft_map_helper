@@ -1326,7 +1326,7 @@ fn path_tokens(data: &str) -> Vec<PathToken> {
     tokens
 }
 
-fn path_endpoints(data: &str) -> Vec<(f64, f64)> {
+pub(crate) fn path_endpoints(data: &str) -> Vec<(f64, f64)> {
     let tokens = path_tokens(data);
     let mut points = Vec::new();
     let mut index = 0;

@@ -244,6 +244,31 @@ Built-in `res://sprites/...` textures resolve below the configured core
 resolve below the sibling `wonderdraft_files/packs` folder and automatically
 pick up extracted image extensions such as `.png`.
 
+### Render an SVG as a new map
+
+**Render SVG…** creates a new map from scratch instead of modifying an open
+map. The SVG width and height become the Wonderdraft viewport. The setup window
+lists every SVG class; when no classes exist, it lists Inkscape layers and
+treats their contents as having the layer name as a class.
+
+Each class can be mapped to `symbol`, `path`, `ground`, `water_tint`,
+`territory`, `landmass`, `freshwater`, or `invisible`. Class-specific controls
+cover symbol search, preview, scale and tint; vector style, color, and width;
+raster fill and border overrides; and optional labels. Label text defaults to
+the `map:svgname` field (with `mapsvg:name` compatibility) and supports font,
+size, colors, outline, and offsets. Settings tables can be saved to and loaded
+from CSV.
+
+Symbols whose centers are outside the viewport are omitted. Paths and shapes
+that cross a viewport edge are retained. Landmass shapes are painted black on
+the new mask, then freshwater shapes are painted red while preserving explicit
+`fill:none`, `stroke:none`, and opacity. Ground and water-tint classes are
+composited into their own full-size transparent image layers.
+
+Raster classes use a small external renderer to keep the executable compact.
+On Linux install one of `resvg`, `rsvg-convert`/librsvg, or Inkscape. Headless
+Google Chrome or Chromium is also supported.
+
 ## SVG round trip
 
 For the most reliable round trip, keep the `wd:*` metadata attributes on SVG

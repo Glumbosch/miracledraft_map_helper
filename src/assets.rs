@@ -118,6 +118,27 @@ impl Resolver {
         })
     }
 
+    /// Enumerate every resolvable symbol image in the configured core, pack,
+    /// and custom asset trees. The URI is the value Wonderdraft stores.
+    pub fn all_assets(&self) -> Vec<AssetInfo> {
+        let mut assets = Vec::new();
+        for (root, prefix) in [
+            (self.default.as_deref(), "res://sprites/"),
+            (self.packs.as_deref(), "res://packs/"),
+            (self.custom.as_deref(), "user://assets/"),
+        ] {
+            let Some(root) = root else { continue };
+            collect_assets(self, root, root, prefix, &mut assets);
+        }
+        assets.sort_by(|left, right| {
+            left.texture
+                .to_lowercase()
+                .cmp(&right.texture.to_lowercase())
+        });
+        assets.dedup_by(|left, right| left.texture == right.texture);
+        assets
+    }
+
     fn metadata_for(&self, path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
         let roots = [
             self.custom.as_deref(),
@@ -149,6 +170,41 @@ impl Resolver {
             current = current.parent()?;
         }
         None
+    }
+}
+
+fn collect_assets(
+    resolver: &Resolver,
+    root: &Path,
+    directory: &Path,
+    prefix: &str,
+    out: &mut Vec<AssetInfo>,
+) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_assets(resolver, root, &path, prefix, out);
+            continue;
+        }
+        let supported = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| EXTS.iter().any(|ext| value.eq_ignore_ascii_case(ext)));
+        if !supported {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let mut relative = relative.to_owned();
+        relative.set_extension("");
+        let texture = format!("{prefix}{}", relative.to_string_lossy().replace('\\', "/"));
+        if let Some(info) = resolver.asset_info(&texture) {
+            out.push(info);
+        }
     }
 }
 fn nonempty(s: &str) -> Option<PathBuf> {
