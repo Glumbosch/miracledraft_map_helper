@@ -1556,8 +1556,11 @@ impl App {
                                                 egui::Color32::from_rgb(80, 190, 255),
                                             );
                                         }
-                                        if response.double_clicked() {
+                                        if response.clicked() {
                                             selected_texture = Some(asset.texture.clone());
+                                        }
+                                        if response.double_clicked() {
+                                            window.gallery_open = false;
                                         }
                                         response.on_hover_text(&asset.texture);
                                     }
@@ -1575,7 +1578,6 @@ impl App {
             if let Some(row) = window.rows.get_mut(window.selected) {
                 row.symbol = texture;
             }
-            window.gallery_open = false;
             self.update_svg_symbol_preview(ctx);
         }
     }
@@ -2488,10 +2490,45 @@ fn color_control(ui: &mut egui::Ui, label: &str, value: &mut [u8; 4]) {
     let mut color = egui::Color32::from_rgba_unmultiplied(value[0], value[1], value[2], value[3]);
     ui.horizontal(|ui| {
         ui.label(label);
-        if ui.color_edit_button_srgba(&mut color).changed() {
+        if large_color_edit_button(ui, &mut color, label).changed() {
             *value = color.to_array();
         }
     });
+}
+
+fn large_color_edit_button(
+    ui: &mut egui::Ui,
+    color: &mut egui::Color32,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+) -> egui::Response {
+    let popup_id = ui.make_persistent_id(("large-color-picker", id_salt));
+    let is_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let mut response = ui.add_sized(
+        egui::vec2(32.0, ui.spacing().interact_size.y),
+        egui::Button::new("").fill(*color).stroke(if is_open {
+            egui::Stroke::new(2.0, ui.visuals().selection.stroke.color)
+        } else {
+            ui.visuals().widgets.inactive.bg_stroke
+        }),
+    );
+    let mut changed = false;
+    egui::Popup::menu(&response)
+        .id(popup_id)
+        .width(380.0)
+        .show(|ui| {
+            // Both the two-dimensional color field and the rainbow hue strip
+            // use this width. The hue strip is rendered below the field.
+            ui.spacing_mut().slider_width = 360.0;
+            changed = egui::color_picker::color_picker_color32(
+                ui,
+                color,
+                egui::color_picker::Alpha::OnlyBlend,
+            );
+        });
+    if changed {
+        response.mark_changed();
+    }
+    response
 }
 
 fn optional_color_control(ui: &mut egui::Ui, label: &str, value: &mut Option<[u8; 4]>) {
