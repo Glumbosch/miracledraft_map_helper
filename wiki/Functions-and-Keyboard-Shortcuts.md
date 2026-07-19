@@ -29,6 +29,26 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Export all PNGs** | Exports every detected embedded image to a selected directory. |
 | **Settings…** | Opens Wonderdraft integration, asset-folder, core-extraction, and cache settings. |
 
+## Render as new Wonderdraft map
+
+**Render SVG…** and **Render from CSV…** open a separate renderer window.
+Its **Render settings…** button controls output dimensions, imported
+classes/layers, and source selection.
+
+| Control | Effect |
+| --- | --- |
+| **Preset / Orientation** | Chooses a standard size and keeps width/height in landscape, portrait, or square form. Manual dimension edits update the orientation automatically. |
+| **Source viewport** | Read-only total coordinate bounds across all imported data. |
+| **Selection area** | The editable coordinate rectangle included in the output. Drag the yellow preview rectangle's corners to resize it, or drag inside it to move it. |
+| **Adjust output map aspect ratio to selection** | Keeps the longer current output dimension and derives the shorter dimension from the selection area's aspect ratio. |
+| **View full preview** | Opens a separate, scrollable native window at one source coordinate per pixel. |
+| **Load/Save settings JSON** | Saves both per-class translation settings and the complete Render settings form. |
+
+For raster classes, **Fill override** has a nested **No fill** checkbox. It
+writes `fill:none`, which is useful for freshwater lines. CSV rows tagged as
+`path`, `polyline`, or `line` remain open; they are not converted into closed
+filled polygons by a CSV fill column.
+
 ## Save and SVG options
 
 | Option | Effect |
@@ -100,3 +120,4 @@ the current operation.
 | **Clear cache now** | Removes inactive cache data immediately while preserving the currently open map's working data. |
 | **Save** | Validates the cache folder, reloads Wonderdraft configuration, and persists settings. |
 | **Cancel** | Restores the settings that were active when the window opened. |
+| **About → Build time** | Shows when the running executable was built, alongside its version number. |

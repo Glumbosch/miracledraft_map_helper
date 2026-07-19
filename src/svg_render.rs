@@ -126,6 +126,8 @@ pub struct ClassSettings {
     #[serde(default)]
     pub roughness: f32,
     pub fill_override: Option<[u8; 4]>,
+    #[serde(default)]
+    pub no_fill_override: bool,
     pub border_override: Option<[u8; 4]>,
     pub border_width_override: Option<f32>,
 }
@@ -145,6 +147,7 @@ impl ClassSettings {
             width: 4.,
             roughness: 0.,
             fill_override: None,
+            no_fill_override: false,
             border_override: None,
             border_width_override: None,
         }
@@ -165,6 +168,111 @@ pub struct Document {
     source_svg: String,
     layer_ids: HashMap<String, Vec<String>>,
     instances: Vec<Instance>,
+}
+
+impl Document {
+    /// Bounds of all coordinates across every class/layer in document pixels.
+    pub fn data_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        let mut points = self.instances.iter().flat_map(|instance| {
+            if instance.points.is_empty() {
+                vec![instance.center]
+            } else {
+                instance.points.clone()
+            }
+        });
+        let first = points.next()?;
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (first.0, first.1, first.0, first.1);
+        for (x, y) in points {
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        Some((
+            min_x,
+            min_y,
+            (max_x - min_x).max(1.0),
+            (max_y - min_y).max(1.0),
+        ))
+    }
+
+    /// Returns the point geometry used by the vector importer for a class.
+    /// This is deliberately a copy: callers use it for previews only.
+    pub fn class_geometry(&self, class_name: &str) -> Vec<Vec<(f64, f64)>> {
+        self.instances
+            .iter()
+            .filter(|instance| instance.class_name == class_name)
+            .map(|instance| {
+                if instance.points.is_empty() {
+                    vec![instance.center]
+                } else {
+                    instance.points.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Makes an output document from selected classes and a source viewport.
+    pub fn cropped_for_render(
+        &self,
+        classes: &HashSet<String>,
+        viewport: (f64, f64, f64, f64),
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let (x, y, viewport_width, viewport_height) = viewport;
+        let inside = |point: (f64, f64)| {
+            point.0 >= x
+                && point.0 <= x + viewport_width
+                && point.1 >= y
+                && point.1 <= y + viewport_height
+        };
+        let scale_x = width as f64 / viewport_width.max(f64::EPSILON);
+        let scale_y = height as f64 / viewport_height.max(f64::EPSILON);
+        let transform = |point: (f64, f64)| ((point.0 - x) * scale_x, (point.1 - y) * scale_y);
+        let mut document = self.clone();
+        document.width = width;
+        document.height = height;
+        // Keep rasterized categories (ground, water, landmass, freshwater) in
+        // the same source viewport as vector records. The original SVG is a
+        // nested document so its authored coordinate system remains intact.
+        document.source_svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="{x} {y} {viewport_width} {viewport_height}" overflow="hidden">{}</svg>"#,
+            self.source_svg
+        );
+        document.classes.retain(|class| classes.contains(class));
+        document.instances = self
+            .instances
+            .iter()
+            .filter_map(|instance| {
+                if !classes.contains(&instance.class_name) {
+                    return None;
+                }
+                let source_points = if instance.points.is_empty() {
+                    vec![instance.center]
+                } else {
+                    instance.points.clone()
+                };
+                let points = source_points
+                    .into_iter()
+                    .filter(|point| inside(*point))
+                    .map(transform)
+                    .collect::<Vec<_>>();
+                if points.is_empty() || (instance.has_nodes && points.len() < 2) {
+                    return None;
+                }
+                let mut instance = instance.clone();
+                instance.center = transform(instance.center);
+                instance.label_anchor = instance
+                    .label_anchor
+                    .filter(|point| inside(*point))
+                    .map(transform);
+                instance.points = points;
+                Some(instance)
+            })
+            .collect();
+        document
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -467,6 +575,7 @@ pub fn analyze_table(path: &Path, table: &TableData, options: &TableOptions) -> 
         }
         append_table_svg_element(
             &mut svg,
+            tag,
             class_value,
             id,
             name,
@@ -1203,9 +1312,16 @@ fn raster_css(document: &Document, row: &ClassSettings) -> String {
     );
     match row.category {
         Category::Landmass => style.push_str(&format!(" {descendants}{{fill:#000!important;stroke:#000!important;stroke-width:{}px!important}}", row.width)),
-        Category::Freshwater => style.push_str(&format!(" {target}:not([fill=\"none\"]):not([style*=\"fill:none\"]), {target} *:not([fill=\"none\"]):not([style*=\"fill:none\"]){{fill:#ff0000!important}} {target}:not([stroke=\"none\"]):not([style*=\"stroke:none\"]), {target} *:not([stroke=\"none\"]):not([style*=\"stroke:none\"]){{stroke:#ff0000!important}}")),
+        Category::Freshwater => {
+            style.push_str(&format!(" {target}:not([fill=\"none\"]):not([style*=\"fill:none\"]), {target} *:not([fill=\"none\"]):not([style*=\"fill:none\"]){{fill:#ff0000!important}} {target}:not([stroke=\"none\"]):not([style*=\"stroke:none\"]), {target} *:not([stroke=\"none\"]):not([style*=\"stroke:none\"]){{stroke:#ff0000!important}}"));
+            if row.no_fill_override { style.push_str(&format!(" {descendants}{{fill:none!important}}")); }
+            else if let Some(value) = row.fill_override { style.push_str(&format!(" {descendants}{{fill:{}!important}}", hex(value))); }
+            if let Some(value) = row.border_override { style.push_str(&format!(" {descendants}{{stroke:{}!important}}", hex(value))); }
+            if let Some(value) = row.border_width_override { style.push_str(&format!(" {descendants}{{stroke-width:{value}px!important}}")); }
+        }
         Category::Ground | Category::WaterTint => {
-            if let Some(value)=row.fill_override { style.push_str(&format!(" {descendants}{{fill:{}!important}}", hex(value))); }
+            if row.no_fill_override { style.push_str(&format!(" {descendants}{{fill:none!important}}")); }
+            else if let Some(value)=row.fill_override { style.push_str(&format!(" {descendants}{{fill:{}!important}}", hex(value))); }
             if let Some(value)=row.border_override { style.push_str(&format!(" {descendants}{{stroke:{}!important}}", hex(value))); }
             if let Some(value)=row.border_width_override { style.push_str(&format!(" {descendants}{{stroke-width:{value}px!important}}")); }
         }
@@ -1804,6 +1920,7 @@ fn expand_table_points(
 #[allow(clippy::too_many_arguments)]
 fn append_table_svg_element(
     svg: &mut String,
+    tag: &str,
     class_name: &str,
     id: &str,
     name: &str,
@@ -1838,7 +1955,13 @@ fn append_table_svg_element(
         .map(|(x, y)| format!("{x},{y}"))
         .collect::<Vec<_>>()
         .join(" ");
-    let tag = if has_fill { "polygon" } else { "polyline" };
+    // A CSV's element/tag column is authoritative. In particular, paths and
+    // polylines must remain open even when their source row contains a fill
+    // value; treating every filled row as a polygon closes freshwater lines.
+    let tag = match tag.trim().to_ascii_lowercase().as_str() {
+        "polygon" if has_fill => "polygon",
+        _ => "polyline",
+    };
     svg.push_str(&format!(r#"<{tag}{attributes} points="{points}"/>"#));
 }
 fn xml_escape(value: &str) -> String {
@@ -2043,6 +2166,8 @@ mod tests {
             vec![(100., 400.), (300., 700.)]
         );
         assert!(document.source_svg.contains("Wäldchen"));
+        assert!(document.source_svg.contains("<polyline"));
+        assert!(!document.source_svg.contains("<polygon"));
         let _ = fs::remove_file(path);
     }
     #[test]

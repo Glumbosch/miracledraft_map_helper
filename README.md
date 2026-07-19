@@ -256,10 +256,25 @@ class.
 Each class can be mapped to `symbol`, `path`, `ground`, `water_tint`,
 `territory`, `landmass`, `freshwater`, or `invisible`. Class-specific controls
 cover symbol search, preview, scale and tint; vector style, color, and width;
-raster fill and border overrides; and optional labels. Label text defaults to
+raster fill and border overrides (including an explicit **No fill** override);
+and optional labels. Label text defaults to
 the `map:svgname` field (with `mapsvg:name` compatibility) and supports font,
-size, colors, outline, and offsets. Settings tables can be saved to and loaded
-from CSV.
+size, colors, outline, and offsets. **Load settings JSON…** and **Save settings
+JSON…** store the complete per-class configuration together with the render
+form's output dimensions, selected classes, source selection area, and preview
+choice. CSV remains an input format for map data, not for saved renderer
+settings.
+
+**Render settings…** provides standard screen and print-size presets, a
+landscape/portrait/square orientation control, and manual 512–8192 pixel map
+dimensions. It shows the fixed source viewport: the full coordinate bounds of
+all imported classes. The editable **selection area** determines which points
+are included and is scaled to the output dimensions. Its yellow rectangle can
+be resized from its four corner handles or moved by dragging inside it. The
+preview canvas keeps the same source aspect ratio for every class; **View full
+preview** opens a separate scrollable native window at one source coordinate
+per pixel. **Adjust output map aspect ratio to selection** retains the current
+longer output dimension and calculates the shorter one from the selection.
 
 For symbol classes, **Symbol gallery…** opens a scrollable second window over
 all configured core, pack, and custom assets. It provides a name filter, tile
@@ -279,10 +294,12 @@ so transparent white line art remains visible. If an old core-sprites setting
 points at a missing extraction, the helper automatically repairs it to this
 checkout's `wonderdraft_files/sprites` directory.
 
-Symbols whose centers are outside the viewport are omitted. Paths and shapes
-that cross a viewport edge are retained. Landmass shapes are painted black on
+Symbols whose centers are outside the selection area are omitted. Paths and
+shapes retain only their points inside it. Landmass shapes are painted black on
 the new mask, then freshwater shapes are painted red while preserving explicit
-`fill:none`, `stroke:none`, and opacity. Ground and water-tint classes are
+`fill:none`, `stroke:none`, and opacity. CSV rows tagged as paths, polylines,
+or lines remain open rather than being converted into filled closed polygons.
+Ground and water-tint classes are
 composited into their own full-size transparent image layers.
 
 Raster classes use a small external renderer to keep the executable compact.
