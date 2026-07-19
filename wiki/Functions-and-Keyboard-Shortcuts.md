@@ -26,6 +26,8 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Export SVG…** | Exports the enabled map layers to SVG using the current embedding settings. |
 | **Import SVG…** | Reads supported SVG elements and their `wd:*` metadata into the currently open map data. Save afterward to create a map file. |
 | **Inkarnate → SVG…** | Converts an Inkarnate v3 JSON backup into a layered SVG without requiring Python. The SVG can then be rendered as a new Wonderdraft map. |
+| **Render SVG…** | Opens an SVG in the renderer so selected classes or Inkscape layers can be converted into a new Wonderdraft map. |
+| **Render from CSV…** | Imports a delimited table (`.csv`, `.tsv`, or `.txt`), lets you assign coordinate and style columns, and opens it in the renderer. |
 | **Export map data…** | Writes the currently displayed Godot text to a plain `.txt` file. |
 | **Export all PNGs** | Exports every detected embedded image to a selected directory. |
 | **Settings…** | Opens Wonderdraft integration, asset-folder, core-extraction, and cache settings. |
@@ -60,6 +62,18 @@ category.
 stores it in Wonderdraft's trace overlay. This is particularly useful for the
 **Preview** layer emitted by Inkarnate conversion. Only the first selected
 tracing row is used.
+
+The renderer's **Symbol gallery…** shows resolved Wonderdraft symbol assets for
+the selected symbol class. Search by asset path, change the preview scale, and
+switch between black, white, and checkerboard backgrounds. Clicking an asset
+applies it to the selected symbol row.
+
+### CSV column mapping
+
+The CSV importer detects UTF-8 and can fall back to Windows-1252, and can infer
+comma, tab, or other delimiters. Assign columns for X/Y coordinates, geometry
+type, class/category, color, width, opacity, and label content. Rows tagged as
+`path`, `polyline`, or `line` remain open.
 
 ## Save and SVG options
 

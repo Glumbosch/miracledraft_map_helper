@@ -60,3 +60,26 @@ Run the wizard's font scan and installation step. It updates the editable,
 tab-separated `wonderdraft_font_names.txt` mapping and can install `.ttf`,
 `.otf`, `.ttc`, and `.otc` files for the current user. Restart applications
 that were already running if newly installed fonts are not visible.
+
+### Inkarnate conversion fails
+
+The converter requires an Inkarnate v3 JSON backup containing scene-size data.
+PNG exports, project links, and other JSON formats are not interchangeable with
+that backup. Save the generated SVG to a writable folder. Only data understood
+by the converter is recovered; missing artwork may need to be rebuilt in
+Wonderdraft.
+
+### The rendered map is cropped or the scale is wrong
+
+Open **Render settings…** and inspect the source viewport and selection area.
+Reset the selection to the source viewport, or resize it to the intended crop,
+then choose the output preset and orientation. Save the settings JSON once the
+coordinate mapping is correct.
+
+### A symbol is not available in the gallery
+
+Confirm that the default sprites folder or custom asset folder is configured in
+**Settings…**. Extract `Wonderdraft.pck` for built-in symbols, and check that
+custom packs are located under the configured assets directory. The gallery
+only displays assets the helper can resolve; it does not include or distribute
+Wonderdraft assets.

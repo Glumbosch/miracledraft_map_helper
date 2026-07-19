@@ -60,3 +60,25 @@ SVG destination. The native converter recovers the preview image, land mask,
 paths, text, and grid into named SVG layers. Open that SVG with **Render SVG…**.
 To keep the original artwork visible while you configure the conversion, select
 the `Preview` layer and enable **Use this layer/class as tracing image**.
+
+This converts recoverable map data, not every Inkarnate asset and effect. The
+preview is useful as a visual guide; paths and labels can be rendered as
+editable Wonderdraft content, while textures and asset placement may need to
+be recreated.
+
+## Render an SVG or table as a new map
+
+Use **Render SVG…** for an SVG from Inkarnate or another source. Use **Render
+from CSV…** for coordinate data such as roads, points, polygons, or labels.
+Both workflows open a separate renderer window:
+
+1. Select the source file.
+2. Choose the imported layers/classes or map-data columns to render.
+3. Open **Render settings…** and choose the output size, orientation, source
+   selection, and per-class translation/fill settings.
+4. Preview the result and optionally save the settings as JSON.
+5. Render the new `.wonderdraft_map`, then open it in Wonderdraft and check it.
+
+For an SVG, assign text to the **label** category to create Wonderdraft
+labels. For CSV input, map a column to **Label content**. Open paths remain
+open when CSV rows are tagged as `path`, `polyline`, or `line`.
