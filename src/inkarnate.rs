@@ -42,7 +42,7 @@ pub fn convert(source: &Path, destination: &Path) -> Result<()> {
         &[format!(
             r##"<rect width="{width}" height="{height}" fill="#d8c99b" mask="url(#land-mask)"/>"##
         )],
-        false,
+        true,
     ));
     let mut paths = Vec::new();
     let mut text = Vec::new();
