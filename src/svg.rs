@@ -197,6 +197,19 @@ fn color(v: Option<&Value>, default: [f64; 4]) -> (String, f64) {
         c[3].clamp(0., 1.),
     )
 }
+
+fn sample_color(record: &Value) -> Option<(String, String, f64)> {
+    let sample = record.get("sample")?;
+    let Value::Vector { kind, values } = sample else {
+        return None;
+    };
+    if kind != "Color" || values.len() < 4 || values.iter().take(4).any(|value| !value.is_finite())
+    {
+        return None;
+    }
+    let (color, alpha) = color(Some(sample), [1.0, 1.0, 1.0, 1.0]);
+    Some((format!("{color}|{alpha}"), color, alpha))
+}
 fn b64(data: &[u8], url: bool) -> String {
     let alpha = if url {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -792,6 +805,35 @@ pub fn export(
                 xml.push_str("  </defs>\n");
             }
         }
+        let mut sample_color_filters = HashMap::new();
+        if let Some(symbols) = root.get("symbols").and_then(Value::as_array) {
+            let mut definitions = String::new();
+            for record in symbols {
+                let texture = record.get("texture").and_then(Value::as_str).unwrap_or("");
+                if resolver.asset_info(texture).is_none() {
+                    continue;
+                }
+                let Some((key, color, alpha)) = sample_color(record) else {
+                    continue;
+                };
+                if sample_color_filters.contains_key(&key) {
+                    continue;
+                }
+                let id = format!(
+                    "wonderdraft-symbol-sample-color-filter-{}",
+                    sample_color_filters.len()
+                );
+                definitions.push_str(&format!(
+                    "    <filter id=\"{id}\" color-interpolation-filters=\"sRGB\">\n      <feComposite in2=\"SourceGraphic\" operator=\"arithmetic\" k1=\"0\" k2=\"1\" result=\"wonderdraft-sample-composite\"/>\n      <feColorMatrix in=\"wonderdraft-sample-composite\" values=\"1\" type=\"saturate\" result=\"wonderdraft-sample-gray\"/>\n      <feFlood flood-opacity=\"{alpha}\" flood-color=\"{color}\" result=\"wonderdraft-sample-flood\"/>\n      <feBlend in=\"wonderdraft-sample-flood\" in2=\"wonderdraft-sample-gray\" mode=\"multiply\" result=\"wonderdraft-sample-multiply\"/>\n      <feBlend in2=\"wonderdraft-sample-multiply\" mode=\"screen\" result=\"wonderdraft-sample-screen\"/>\n      <feColorMatrix in=\"wonderdraft-sample-screen\" values=\"1\" type=\"saturate\" result=\"wonderdraft-sample-colorized\"/>\n      <feComposite in=\"wonderdraft-sample-colorized\" in2=\"SourceGraphic\" operator=\"in\" k2=\"1\"/>\n    </filter>\n"
+                ));
+                sample_color_filters.insert(key, id);
+            }
+            if !definitions.is_empty() {
+                xml.push_str("  <defs id=\"wonderdraft-symbol-sample-color-filters\">\n");
+                xml.push_str(&definitions);
+                xml.push_str("  </defs>\n");
+            }
+        }
         let mut custom_color_filters = HashMap::new();
         if let Some(symbols) = root.get("symbols").and_then(Value::as_array) {
             let mut definitions = String::new();
@@ -887,6 +929,8 @@ pub fn export(
                         .and_then(|matrix| custom_color_filters.get(&matrix))
                         .map(|id| format!(" filter=\"url(#{id})\""))
                         .unwrap_or_default();
+                    let sample_filter =
+                        sample_color(r).and_then(|(key, _, _)| sample_color_filters.get(&key));
                     let outline_filter =
                         outline_style(r).and_then(|(key, _, _, _)| outline_filters.get(&key));
                     let common = format!(
@@ -910,6 +954,13 @@ pub fn export(
                             .map(|url| url.to_string())
                             .unwrap_or_else(|_| asset.path.to_string_lossy().into_owned());
                         format!("    <image {common} xlink:href=\"{}\"/>\n", esc(&href))
+                    };
+                    let element = if let Some(filter) = sample_filter {
+                        format!(
+                            "    <g id=\"wonderdraft-symbol-sample-color-{i}\" filter=\"url(#{filter})\">\n  {element}    </g>\n"
+                        )
+                    } else {
+                        element
                     };
                     if let Some(filter) = outline_filter {
                         xml.push_str(&format!(
@@ -1782,6 +1833,118 @@ mod tests {
                 .map(|(k, v)| (Value::String(k.into()), v))
                 .collect(),
         )
+    }
+
+    fn normalize_xlink_hrefs(svg: &str) -> String {
+        let mut normalized = String::with_capacity(svg.len());
+        let mut rest = svg;
+        while let Some(start) = rest.find("xlink:href=\"") {
+            let value_start = start + "xlink:href=\"".len();
+            normalized.push_str(&rest[..value_start]);
+            let Some(value_end) = rest[value_start..].find('"') else {
+                normalized.push_str(&rest[value_start..]);
+                return normalized;
+            };
+            normalized.push_str("<xlink:href>");
+            rest = &rest[value_start + value_end..];
+        }
+        normalized.push_str(rest);
+        normalized
+    }
+
+    #[test]
+    fn export_svg_matches_basic_map_fixture_except_for_xlink_hrefs() {
+        let fixture_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles/testfiles_for_export_svg");
+        let temp =
+            std::env::temp_dir().join(format!("wonderdraft-svg-fixture-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+        let variant_path = temp.join("basic_map.variant");
+        let exported_path = temp.join("basic_map.svg");
+
+        crate::gcpf::decompress_file(
+            &fixture_dir.join("basic_map_for_export_svg.wonderdraft_map"),
+            &variant_path,
+            |_, _| {},
+        )
+        .unwrap();
+        let root = crate::variant::decode_file(&variant_path).unwrap();
+        let prepared = crate::images::prepare(&root);
+        let editable = crate::godot_text::parse(
+            &fs::read_to_string(fixture_dir.join("basic_map_for_export_svg_map_data.txt")).unwrap(),
+        )
+        .unwrap();
+        export(
+            &editable,
+            &prepared.images,
+            &exported_path,
+            &Resolver::new(&Settings::default()),
+            ExportOptions {
+                background: false,
+                ..ExportOptions::default()
+            },
+        )
+        .unwrap();
+
+        let expected =
+            fs::read_to_string(fixture_dir.join("basic_map_for_export_svg.svg")).unwrap();
+        let actual = fs::read_to_string(&exported_path).unwrap();
+        assert_eq!(
+            normalize_xlink_hrefs(&actual),
+            normalize_xlink_hrefs(&expected)
+        );
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn quick_import_layermap_svg_creates_expected_paint_layers() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles");
+        let mut imported = Value::dict();
+
+        import(
+            &mut imported,
+            &fixtures.join("layermap.svg"),
+            &Resolver::new(&Settings::default()),
+        )
+        .unwrap();
+
+        let mut failures = Vec::new();
+        for (key, expected_file) in [
+            ("mask", "layermap.mask.png"),
+            ("ground", "layermap.ground.png"),
+            ("water_tint", "layermap.water_tint.png"),
+        ] {
+            let expected = image::open(fixtures.join(expected_file))
+                .unwrap()
+                .to_rgba8();
+            let Some(actual) = imported.get(key).and_then(crate::value::image_info) else {
+                failures.push(format!("quick SVG import did not create {key} image data"));
+                continue;
+            };
+            if (actual.width, actual.height) != expected.dimensions() {
+                failures.push(format!(
+                    "quick SVG import created {key} at {}x{}, expected {}x{}",
+                    actual.width,
+                    actual.height,
+                    expected.width(),
+                    expected.height()
+                ));
+                continue;
+            }
+            let pixels = actual
+                .pixels
+                .read_slice(0, actual.pixels.len() as usize)
+                .unwrap();
+            if pixels != expected.as_raw().as_slice() {
+                failures.push(format!(
+                    "quick SVG import {key} pixels differ from {expected_file}"
+                ));
+            }
+        }
+
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]

@@ -1,5 +1,16 @@
 # Verification report
 
+## Basic SVG export fixture
+
+The SVG test `svg::tests::export_svg_matches_basic_map_fixture_except_for_xlink_hrefs`
+loads `testfiles/testfiles_for_export_svg/basic_map_for_export_svg.wonderdraft_map`,
+prepares its image payloads, and exports SVG with the mask background disabled so
+the test does not create a PNG mask. It compares the result with the supplied
+`basic_map_for_export_svg.svg`, normalizing only `xlink:href` values because
+asset paths are environment-dependent. The editable map values come from the
+companion Godot map-data text fixture so the comparison remains byte-for-byte
+stable for all other SVG content.
+
 Tested with the supplied files:
 
 - `labels and symbol.wonderdraft_map`
