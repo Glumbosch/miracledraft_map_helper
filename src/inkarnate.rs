@@ -2,7 +2,11 @@
 
 use crate::{Error, Result};
 use serde_json::{Map, Value};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::Path,
+};
 
 pub fn convert(source: &Path, destination: &Path) -> Result<()> {
     let document: Value = serde_json::from_slice(&fs::read(source).map_err(io_error)?)
@@ -259,13 +263,17 @@ fn mask_shapes(document: &Value) -> Vec<(String, String, String)> {
         let rule = string(shape, "fillRule").unwrap_or("nonzero").to_owned();
         let mode = string(command, "mode").unwrap_or("add").to_owned();
         let paths = match string(shape, "type") {
-            Some("arc-to-paths-shape") => shape
-                .get("arcToPaths")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(|path| arc_path(path.as_array().unwrap_or(&Vec::new())))
-                .collect(),
+            Some("arc-to-paths-shape") => {
+                let mut seen = HashSet::new();
+                shape
+                    .get("arcToPaths")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|path| seen.insert(path.to_string()))
+                    .map(|path| arc_path(path.as_array().unwrap_or(&Vec::new())))
+                    .collect()
+            }
             Some("polygons-shape") => shape
                 .get("polygons")
                 .and_then(Value::as_array)
@@ -418,6 +426,26 @@ mod tests {
         assert!(svg.contains("Harbor"));
         assert!(svg.contains("font-family=\"Lancelot\""));
         let _ = fs::remove_file(source);
+        let _ = fs::remove_file(destination);
+    }
+
+    #[test]
+    fn supplied_backup_matches_reference_island_mask_structure() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = root.join("testfiles/backup.json");
+        let reference = fs::read_to_string(root.join("testfiles/map-vectors.svg")).unwrap();
+        let destination =
+            std::env::temp_dir().join(format!("inkarnate-islands-{}.svg", std::process::id()));
+        convert(&source, &destination).unwrap();
+        let actual = fs::read_to_string(&destination).unwrap();
+        let mask_paths = |svg: &str| {
+            svg.split_once("</mask>")
+                .map_or(0, |(mask, _)| mask.matches("<path ").count())
+        };
+        assert_eq!(mask_paths(&actual), mask_paths(&reference));
+        assert!(actual.contains(r#"inkscape:label="Islands""#));
+        assert!(actual.contains(r##"mask="url(#land-mask)""##));
+        assert!(!actual.contains(r#"id="layer-islands" style="display:none""#));
         let _ = fs::remove_file(destination);
     }
 }
