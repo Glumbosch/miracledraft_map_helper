@@ -25,9 +25,55 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Save map as…** | Rebuilds the map from the current text, embedded images, and binary data, then writes a new `.wonderdraft_map`. |
 | **Export SVG…** | Exports the enabled map layers to SVG using the current embedding settings. |
 | **Import SVG…** | Reads supported SVG elements and their `wd:*` metadata into the currently open map data. Save afterward to create a map file. |
+| **Inkarnate → SVG…** | Converts an Inkarnate v3 JSON backup into a layered SVG without requiring Python. The SVG can then be rendered as a new Wonderdraft map. |
+| **Render SVG…** | Opens an SVG in the renderer so selected classes or Inkscape layers can be converted into a new Wonderdraft map. |
+| **Render from CSV…** | Imports a delimited table (`.csv`, `.tsv`, or `.txt`), lets you assign coordinate and style columns, and opens it in the renderer. |
 | **Export map data…** | Writes the currently displayed Godot text to a plain `.txt` file. |
 | **Export all PNGs** | Exports every detected embedded image to a selected directory. |
 | **Settings…** | Opens Wonderdraft integration, asset-folder, core-extraction, and cache settings. |
+
+## Render as new Wonderdraft map
+
+**Render SVG…** and **Render from CSV…** open a separate renderer window.
+Its **Render settings…** button controls output dimensions, imported
+classes/layers, and source selection.
+
+| Control | Effect |
+| --- | --- |
+| **Preset / Orientation** | Chooses a standard size and keeps width/height in landscape, portrait, or square form. Manual dimension edits update the orientation automatically. |
+| **Source viewport** | Read-only total coordinate bounds across all imported data. |
+| **Selection area** | The editable coordinate rectangle included in the output. Drag the yellow preview rectangle's corners to resize it, or drag inside it to move it. |
+| **Adjust output map aspect ratio to selection** | Keeps the longer current output dimension and derives the shorter dimension from the selection area's aspect ratio. |
+| **View full preview** | Opens a separate, scrollable native window at one source coordinate per pixel. |
+| **Load/Save settings JSON** | Saves both per-class translation settings and the complete Render settings form. |
+
+For raster classes, **Fill override** has a nested **No fill** checkbox. It
+writes `fill:none`, which is useful for freshwater lines. CSV rows tagged as
+`path`, `polyline`, or `line` remain open; they are not converted into closed
+filled polygons by a CSV fill column.
+
+Set a class or Inkscape layer to the **label** category to create one
+Wonderdraft label for every SVG `<text>` element. Its content is taken from the
+SVG text; font, size, fill color, opacity, and text anchor are matched by
+default. CSV rendering provides a **Label content** column for the same
+category.
+
+**Use this layer/class as tracing image** rasterizes that source selection and
+stores it in Wonderdraft's trace overlay. This is particularly useful for the
+**Preview** layer emitted by Inkarnate conversion. Only the first selected
+tracing row is used.
+
+The renderer's **Symbol gallery…** shows resolved Wonderdraft symbol assets for
+the selected symbol class. Search by asset path, change the preview scale, and
+switch between black, white, and checkerboard backgrounds. Clicking an asset
+applies it to the selected symbol row.
+
+### CSV column mapping
+
+The CSV importer detects UTF-8 and can fall back to Windows-1252, and can infer
+comma, tab, or other delimiters. Assign columns for X/Y coordinates, geometry
+type, class/category, color, width, opacity, and label content. Rows tagged as
+`path`, `polyline`, or `line` remain open.
 
 ## Save and SVG options
 
@@ -100,3 +146,4 @@ the current operation.
 | **Clear cache now** | Removes inactive cache data immediately while preserving the currently open map's working data. |
 | **Save** | Validates the cache folder, reloads Wonderdraft configuration, and persists settings. |
 | **Cancel** | Restores the settings that were active when the window opened. |
+| **About → Build time** | Shows when the running executable was built, alongside its version number. |

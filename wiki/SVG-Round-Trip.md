@@ -18,6 +18,18 @@ For the exact group and attribute rules used by the importer, see
 7. Review the import count in the status/dialog, then click **Save map as…**.
 8. Open the new map in Wonderdraft and verify it visually.
 
+## Rendering an SVG as a new map
+
+An SVG does not need to come from an existing Wonderdraft map. Choose
+**Render SVG…**, select the file, and configure its imported classes or
+Inkscape layers in the renderer. This is the next step after
+**Inkarnate → SVG…**. Select the `Preview` class if you want to use the
+original artwork as a tracing image while rendering paths and labels.
+
+The renderer works from source coordinates and lets you crop or reposition the
+selection area before choosing output dimensions. Save the render settings to
+JSON when repeating the same conversion with another SVG.
+
 ## Example
 
 Original map and decoded data:

@@ -27,6 +27,33 @@ Full usage documentation is available in the
 [project wiki](https://github.com/Glumbosch/miracledraft_map_helper/wiki),
 including a [function and keyboard-shortcut reference](https://github.com/Glumbosch/miracledraft_map_helper/wiki/Functions-and-Keyboard-Shortcuts).
 
+## Changes since v0.4.6
+
+The current release is based on the stable v0.4.6 release. **v0.4.7 was a
+buggy intermediate release and should be skipped.** Since v0.4.6, the main
+changes are:
+
+- Added a native **Inkarnate v3 JSON backup → layered SVG** converter. It
+  recovers the preview, island mask, paths, text, and grid without requiring
+  Python. The generated SVG can be opened with **Render SVG…** and used as the
+  basis for a new Wonderdraft map.
+- Added a full SVG renderer with viewport controls, per-layer/class settings,
+  render-settings save/load, color filters, and tracing-image support. The
+  Inkarnate preview layer can be used as a tracing image while rebuilding a
+  map in Wonderdraft.
+- Improved SVG and layermap handling, including mask/import workflows and
+  more reliable Wonderdraft layer rendering.
+- Added a symbol asset gallery and expanded Wonderdraft asset resolution,
+  including better support for extracted core and custom assets.
+- Added CSV-based map rendering and additional SVG export/import test
+  fixtures.
+- Expanded the documentation with SVG editing, map-data syntax, file-format,
+  renderer, and troubleshooting guidance.
+
+For the complete history, see the commits between
+[`v0.4.6`](https://github.com/Glumbosch/miracledraft_map_helper/releases/tag/v0.4.6)
+and the [latest release](https://github.com/Glumbosch/miracledraft_map_helper/releases/latest).
+
 ## Screenshots
 
 ### Main editor
@@ -243,6 +270,68 @@ Built-in `res://sprites/...` textures resolve below the configured core
 `sprites` folder. Pack textures such as `res://packs/<pack>/sprites/.../5`
 resolve below the sibling `wonderdraft_files/packs` folder and automatically
 pick up extracted image extensions such as `.png`.
+
+### Render an SVG as a new map
+
+**Render SVG…** creates a new map from scratch instead of modifying an open
+map. It opens its configuration in a separate native window, while the main
+editor remains available. The SVG width and height become the Wonderdraft
+viewport. The setup window lists every SVG class; when no classes exist, it
+lists Inkscape layers and treats their contents as having the layer name as a
+class.
+
+Each class can be mapped to `symbol`, `path`, `ground`, `water_tint`,
+`territory`, `landmass`, `freshwater`, or `invisible`. Class-specific controls
+cover symbol search, preview, scale and tint; vector style, color, and width;
+raster fill and border overrides (including an explicit **No fill** override);
+and optional labels. Label text defaults to
+the `map:svgname` field (with `mapsvg:name` compatibility) and supports font,
+size, colors, outline, and offsets. **Load settings JSON…** and **Save settings
+JSON…** store the complete per-class configuration together with the render
+form's output dimensions, selected classes, source selection area, and preview
+choice. CSV remains an input format for map data, not for saved renderer
+settings.
+
+**Render settings…** provides standard screen and print-size presets, a
+landscape/portrait/square orientation control, and manual 512–8192 pixel map
+dimensions. It shows the fixed source viewport: the full coordinate bounds of
+all imported classes. The editable **selection area** determines which points
+are included and is scaled to the output dimensions. Its yellow rectangle can
+be resized from its four corner handles or moved by dragging inside it. The
+preview canvas keeps the same source aspect ratio for every class; **View full
+preview** opens a separate scrollable native window at one source coordinate
+per pixel. **Adjust output map aspect ratio to selection** retains the current
+longer output dimension and calculates the shorter one from the selection.
+
+For symbol classes, **Symbol gallery…** opens a scrollable second window over
+all configured core, pack, and custom assets. It provides a name filter, tile
+scale, black/white/checkerboard background choices, and selects an asset on
+double-click. The gallery and renderer read a persisted asset database; use
+**Settings → Rebuild symbol database** after changing an asset folder. Setup
+rebuilds it automatically once custom and core asset folders are ready. Each
+tile carries a rubber-stamp, brush, or palette icon for normal, sample-color,
+or three-custom-color draw modes read from `.wonderdraft_symbols`.
+
+Sample-color assets expose one tint picker. Three-custom-color assets expose
+three pickers and export Wonderdraft `custom_color_mode: 1` with a
+`custom_colors` list; normal symbols retain their original artwork. Symbol
+scale has a 0–100 slider and accepts typed values outside that range. The path
+style selector previews the extracted `textures/paths` PNGs on a dark backing
+so transparent white line art remains visible. If an old core-sprites setting
+points at a missing extraction, the helper automatically repairs it to this
+checkout's `wonderdraft_files/sprites` directory.
+
+Symbols whose centers are outside the selection area are omitted. Paths and
+shapes retain only their points inside it. Landmass shapes are painted black on
+the new mask, then freshwater shapes are painted red while preserving explicit
+`fill:none`, `stroke:none`, and opacity. CSV rows tagged as paths, polylines,
+or lines remain open rather than being converted into filled closed polygons.
+Ground and water-tint classes are
+composited into their own full-size transparent image layers.
+
+Raster classes use a small external renderer to keep the executable compact.
+On Linux install one of `resvg`, `rsvg-convert`/librsvg, or Inkscape. Headless
+Google Chrome or Chromium is also supported.
 
 ## SVG round trip
 

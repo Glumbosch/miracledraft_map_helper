@@ -128,50 +128,6 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Prepare itch.io packages
-        shell: bash
-        run: |
-          mkdir -p itch/linux itch/windows itch/macos
-          tar -xzf dist/*-linux-x86_64.tar.gz --strip-components=1 -C itch/linux
-          tar -xzf dist/*-macos-aarch64.tar.gz --strip-components=1 -C itch/macos
-          unzip -q dist/*-windows-x86_64.zip -d itch/windows
-          windows_dir=$(find itch/windows -mindepth 1 -maxdepth 1 -type d -print -quit)
-          if [ -n "$windows_dir" ]; then
-            cp -a "$windows_dir"/. itch/windows/
-            rm -rf "$windows_dir"
-          fi
-
-      - name: Install Butler
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-        run: |
-          if [ -z "$BUTLER_API_KEY" ]; then
-            echo "::error::Repository secret BUTLER_API_KEY is not configured"
-            exit 1
-          fi
-          mkdir -p tools
-          curl --fail --location --silent --show-error \
-            --output tools/butler.zip \
-            https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
-          unzip -q tools/butler.zip -d tools
-          chmod +x tools/butler
-          tools/butler -V
-
-      - name: Publish Linux build to itch.io
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-        run: tools/butler push itch/linux glumbosch/miracledraft-map-helper:linux --userversion "$GITHUB_REF_NAME"
-
-      - name: Publish Windows build to itch.io
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-        run: tools/butler push itch/windows glumbosch/miracledraft-map-helper:windows --userversion "$GITHUB_REF_NAME"
-
-      - name: Publish macOS build to itch.io
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-        run: tools/butler push itch/macos glumbosch/miracledraft-map-helper:osx --userversion "$GITHUB_REF_NAME"
-
       - name: Create checksums
         working-directory: dist
         run: sha256sum *.tar.gz *.zip > SHA256SUMS

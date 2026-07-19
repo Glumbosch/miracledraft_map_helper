@@ -6,13 +6,15 @@ use miracledraft_map_helper::{
     assets::Resolver,
     fonts, gcpf, godot_text,
     images::{self, BinaryBlobs, Images},
-    pck,
+    inkarnate, pck,
     settings::{self, Settings, WonderdraftConfig},
-    svg,
+    svg, svg_render,
     value::image_info,
     variant,
 };
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -20,6 +22,24 @@ use std::{
 
 const APP_NAME: &str = "Miracledraft Map Helper";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_TIME: &str = env!("MIRACLEDRAFT_BUILD_TIME");
+const DRAW_MODE_ICONS: &[(&str, &str, &[u8])] = &[
+    (
+        "normal",
+        "rubber-stamp.svg",
+        include_bytes!("../app_assets/icons/rubber-stamp.svg"),
+    ),
+    (
+        "sample_color",
+        "brush.svg",
+        include_bytes!("../app_assets/icons/brush.svg"),
+    ),
+    (
+        "custom_colors",
+        "palette.svg",
+        include_bytes!("../app_assets/icons/palette.svg"),
+    ),
+];
 
 struct App {
     text: String,
@@ -50,6 +70,8 @@ struct App {
     setup_step: usize,
     cache_size_bytes: Option<u64>,
     pending_dialog: Option<Receiver<DialogSelection>>,
+    dialog_directory: Option<PathBuf>,
+    overwrite_prompt: Option<PathBuf>,
     map_load: Option<Receiver<Result<LoadedMap>>>,
     pck_extraction: Option<Receiver<Result<pck::Extraction>>>,
     font_installation: Option<Receiver<Result<fonts::Installation>>>,
@@ -65,6 +87,94 @@ struct App {
     focus_search: bool,
     pending_text_selection: Option<(usize, usize)>,
     section_choice: usize,
+    csv_importer: Option<CsvImporterWindow>,
+    svg_renderer: Option<SvgRendererWindow>,
+    svg_render_job: Option<Receiver<(PathBuf, Result<svg_render::RenderSummary>)>>,
+}
+
+struct SvgRendererWindow {
+    document: svg_render::Document,
+    rows: Vec<svg_render::ClassSettings>,
+    selected: usize,
+    assets: Vec<miracledraft_map_helper::assets::AssetInfo>,
+    path_styles: Vec<PathStyleInfo>,
+    preview: Option<egui::TextureHandle>,
+    preview_texture: String,
+    preview_background: usize,
+    created_map: Option<PathBuf>,
+    gallery_open: bool,
+    gallery_scale: f32,
+    gallery_background: usize,
+    gallery_search: String,
+    gallery_textures: HashMap<String, egui::TextureHandle>,
+    path_style_textures: HashMap<String, egui::TextureHandle>,
+    draw_mode_icons: HashMap<String, egui::TextureHandle>,
+    focused_last_frame: bool,
+    render_settings_open: bool,
+    render_settings: RenderImportSettings,
+    full_preview_open: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RenderImportSettings {
+    map_width: u32,
+    map_height: u32,
+    selected_layers: Vec<bool>,
+    source_x: f64,
+    source_y: f64,
+    source_width: f64,
+    source_height: f64,
+    preview_layer: Option<usize>,
+    #[serde(skip)]
+    selection_drag: Option<SelectionDrag>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedRenderSettings {
+    version: u32,
+    rows: Vec<svg_render::ClassSettings>,
+    render_settings: RenderImportSettings,
+}
+
+#[derive(Clone, Copy)]
+struct SelectionDrag {
+    handle: SelectionHandle,
+    pointer: (f64, f64),
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy)]
+enum SelectionHandle {
+    Move,
+    NorthWest,
+    NorthEast,
+    SouthWest,
+    SouthEast,
+}
+
+struct CsvImporterWindow {
+    path: PathBuf,
+    encoding: svg_render::TableEncoding,
+    delimiter: svg_render::TableDelimiter,
+    table: svg_render::TableData,
+    columns: svg_render::TableColumns,
+    relative_after_first: bool,
+    source_x: f64,
+    source_y: f64,
+    source_width: f64,
+    source_height: f64,
+    map_width: u32,
+    map_height: u32,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct PathStyleInfo {
+    texture: String,
+    path: PathBuf,
 }
 
 struct LoadedMap {
@@ -81,6 +191,13 @@ enum DialogAction {
     SaveMap { file_name: String },
     ExportSvg { file_name: String },
     ImportSvg,
+    RenderSvg,
+    RenderCsv,
+    InkarnateBackup,
+    SaveInkarnateSvg { source: PathBuf, file_name: String },
+    LoadRenderSettings,
+    SaveRenderSettings { file_name: String },
+    SaveRenderedMap { file_name: String },
     ExportMapData { file_name: String },
     ExportImage { index: usize, file_name: String },
     ExportAllImages,
@@ -105,6 +222,13 @@ struct FontChoice {
 impl Default for App {
     fn default() -> Self {
         let mut settings = settings::load();
+        let mut repaired_core_assets = false;
+        if !configured_directory(&settings.default_asset_folder)
+            && let Some(core_sprites) = miracledraft_map_helper::assets::bundled_core_sprites()
+        {
+            settings.default_asset_folder = core_sprites.to_string_lossy().into_owned();
+            repaired_core_assets = true;
+        }
         let wonderdraft_folder = settings::find_wonderdraft_folder(&settings.wonderdraft_folder);
         let setup_wizard_open = !settings.setup_completed;
         let wonderdraft_config = wonderdraft_folder
@@ -124,6 +248,9 @@ impl Default for App {
         }
         let cache_dir = PathBuf::from(&settings.cache_folder);
         let cache_size_bytes = settings::directory_size(&cache_dir).ok();
+        if repaired_core_assets {
+            let _ = settings::save(&settings);
+        }
         Self {
             text: String::new(),
             root_path: None,
@@ -153,6 +280,8 @@ impl Default for App {
             setup_step: 0,
             cache_size_bytes,
             pending_dialog: None,
+            dialog_directory: None,
+            overwrite_prompt: None,
             map_load: None,
             pck_extraction: None,
             font_installation: None,
@@ -168,6 +297,9 @@ impl Default for App {
             focus_search: false,
             pending_text_selection: None,
             section_choice: 0,
+            csv_importer: None,
+            svg_renderer: None,
+            svg_render_job: None,
         }
     }
 }
@@ -226,7 +358,10 @@ impl App {
         }
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
-        let open_directory = self.wonderdraft_config.last_directory.clone();
+        let open_directory = self
+            .dialog_directory
+            .take()
+            .or_else(|| self.wonderdraft_config.last_directory.clone());
         let wonderdraft_directory = if self.settings.wonderdraft_folder.trim().is_empty() {
             settings::default_wonderdraft_folder()
         } else {
@@ -246,17 +381,52 @@ impl App {
                     picker.pick_file()
                 }
                 DialogAction::SaveMap { file_name } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
                     .set_file_name(file_name)
                     .add_filter("Wonderdraft map", &["wonderdraft_map"])
                     .save_file(),
                 DialogAction::ExportSvg { file_name } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
                     .set_file_name(file_name)
                     .add_filter("SVG", &["svg"])
                     .save_file(),
                 DialogAction::ImportSvg => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
                     .add_filter("SVG", &["svg"])
                     .pick_file(),
+                DialogAction::RenderSvg => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .add_filter("SVG", &["svg"])
+                    .pick_file(),
+                DialogAction::RenderCsv => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .add_filter("Delimited table", &["csv", "tsv", "txt"])
+                    .pick_file(),
+                DialogAction::InkarnateBackup => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .add_filter("Inkarnate backup", &["json"])
+                    .pick_file(),
+                DialogAction::SaveInkarnateSvg { file_name, .. } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .set_file_name(file_name)
+                    .add_filter("SVG", &["svg"])
+                    .save_file(),
+                DialogAction::LoadRenderSettings => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .add_filter("Render settings JSON", &["json"])
+                    .pick_file(),
+                DialogAction::SaveRenderSettings { file_name } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .set_file_name(file_name)
+                    .add_filter("Render settings JSON", &["json"])
+                    .save_file(),
+                DialogAction::SaveRenderedMap { file_name } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .set_file_name(file_name)
+                    .add_filter("Wonderdraft map", &["wonderdraft_map"])
+                    .save_file(),
                 DialogAction::ExportMapData { file_name } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
                     .set_file_name(file_name)
                     .add_filter("Text", &["txt"])
                     .save_file(),
@@ -281,12 +451,23 @@ impl App {
                     picker.pick_file()
                 }
                 DialogAction::ReplaceImage { .. } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
                     .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
                     .pick_file(),
             };
             let _ = sender.send(DialogSelection { action, path });
             ctx.request_repaint();
         });
+    }
+
+    fn begin_dialog_in_directory(
+        &mut self,
+        action: DialogAction,
+        directory: PathBuf,
+        ctx: &egui::Context,
+    ) {
+        self.dialog_directory = Some(directory);
+        self.begin_dialog(action, ctx);
     }
 
     fn begin_map_load(&mut self, path: PathBuf, ctx: &egui::Context) {
@@ -457,6 +638,31 @@ impl App {
             DialogAction::SaveMap { .. } => self.save_to(&path),
             DialogAction::ExportSvg { .. } => self.export_svg_to(&path),
             DialogAction::ImportSvg => self.import_svg_from(&path),
+            DialogAction::RenderSvg => self.open_svg_renderer(path, ctx),
+            DialogAction::RenderCsv => self.open_csv_importer(path),
+            DialogAction::InkarnateBackup => {
+                let file_name = format!(
+                    "{}.svg",
+                    path.file_stem().unwrap_or_default().to_string_lossy()
+                );
+                self.begin_dialog(
+                    DialogAction::SaveInkarnateSvg {
+                        source: path,
+                        file_name,
+                    },
+                    ctx,
+                );
+                return;
+            }
+            DialogAction::SaveInkarnateSvg { source, .. } => {
+                self.convert_inkarnate_to_svg(&source, &path)
+            }
+            DialogAction::LoadRenderSettings => self.load_svg_render_settings(&path),
+            DialogAction::SaveRenderSettings { .. } => self.save_svg_render_settings(&path),
+            DialogAction::SaveRenderedMap { .. } => {
+                self.begin_svg_render(path, ctx);
+                return;
+            }
             DialogAction::ExportMapData { .. } => self.export_map_data_to(&path),
             DialogAction::ExportImage { index, .. } => self.export_image_to(index, &path),
             DialogAction::ExportAllImages => self.export_all_to(&path),
@@ -635,11 +841,16 @@ impl App {
         if settings::find_wonderdraft_folder(&self.settings.wonderdraft_folder).is_some() {
             self.reload_wonderdraft_config()?;
         }
+        let indexed = Resolver::new(&self.settings)
+            .rebuild_symbol_database()?
+            .len();
         self.settings.setup_completed = true;
         settings::save(&self.settings)?;
         self.cache_dir = cache;
         self.refresh_cache_size();
-        self.status = "Setup complete — open or drop a .wonderdraft_map file".into();
+        self.status = format!(
+            "Setup complete — symbol database contains {indexed} assets; open or drop a .wonderdraft_map file"
+        );
         Ok(())
     }
     fn show_setup_wizard(&mut self, ctx: &egui::Context) {
@@ -758,15 +969,17 @@ impl App {
                                 ui.label("Extracting core assets in the background…");
                             });
                         }
-                        if ui
-                            .add_enabled(
-                                self.pending_dialog.is_none()
-                                    && self.pck_extraction.is_none(),
-                                egui::Button::new("Choose Wonderdraft.pck…"),
-                            )
-                            .clicked()
-                        {
+                        let choose_pck = ui.add_enabled(
+                            self.pending_dialog.is_none() && self.pck_extraction.is_none(),
+                            egui::Button::new("Choose Wonderdraft.pck…"),
+                        );
+                        if choose_pck.clicked() {
                             self.begin_dialog(DialogAction::WonderdraftPck, ctx);
+                        }
+                        if let Some(path) = dropped_path_over(ui, &choose_pck, |path| {
+                            is_extension(path, &["pck"])
+                        }) {
+                            self.begin_pck_extraction(path, ctx);
                         }
                         ui.small(format!(
                             "Extraction destination: {}",
@@ -1150,15 +1363,1096 @@ impl App {
         Ok(())
     }
     fn import_svg_from(&mut self, path: &Path) -> Result<()> {
-        let mut root = self.parse()?;
-        let s = svg::import(&mut root, path, &Resolver::new(&self.settings))?;
-        self.text = godot_text::format(&root);
+        if self.text.trim().is_empty()
+            && let Some((prepared, s)) = quick_import_svg(path, &Resolver::new(&self.settings))?
+        {
+            self.images = prepared.images;
+            self.binary_blobs = prepared.binary_blobs;
+            self.text = godot_text::format(&prepared.editable);
+            self.status = format!(
+                "Imported SVG: {} labels, {} symbols, {} paths, {} territories",
+                s.labels, s.symbols, s.paths, s.territories
+            );
+            dialog("SVG imported", &self.status, false);
+            return Ok(());
+        }
+        let (text, s) = import_svg_text(&self.text, path, &Resolver::new(&self.settings))?;
+        self.text = text;
         self.status = format!(
             "Imported SVG: {} labels, {} symbols, {} paths, {} territories",
             s.labels, s.symbols, s.paths, s.territories
         );
         dialog("SVG imported", &self.status, false);
         Ok(())
+    }
+    fn open_svg_renderer(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<()> {
+        let document = svg_render::analyze(&path)?;
+        let class_count = document.classes.len();
+        let fallback = document.layer_fallback;
+        self.open_render_document(document, ctx)?;
+        self.status = if fallback {
+            format!("SVG has no classes; found {class_count} Inkscape layers")
+        } else {
+            format!("Found {class_count} SVG classes")
+        };
+        Ok(())
+    }
+
+    fn convert_inkarnate_to_svg(&mut self, source: &Path, destination: &Path) -> Result<()> {
+        inkarnate::convert(source, destination)?;
+        self.status = format!("Converted Inkarnate backup to {}", destination.display());
+        Ok(())
+    }
+    fn open_render_document(
+        &mut self,
+        document: svg_render::Document,
+        ctx: &egui::Context,
+    ) -> Result<()> {
+        let rows = svg_render::default_settings(&document);
+        let (source_x, source_y, source_width, source_height) = document.data_bounds().unwrap_or((
+            0.0,
+            0.0,
+            document.width as f64,
+            document.height as f64,
+        ));
+        let render_settings = RenderImportSettings {
+            map_width: document.width,
+            map_height: document.height,
+            selected_layers: vec![true; rows.len()],
+            source_x,
+            source_y,
+            source_width,
+            source_height,
+            preview_layer: None,
+            selection_drag: None,
+        };
+        let resolver = Resolver::new(&self.settings);
+        let assets = resolver.symbol_database()?;
+        self.svg_renderer = Some(SvgRendererWindow {
+            document,
+            rows,
+            selected: 0,
+            path_styles: path_styles(&resolver),
+            assets,
+            preview: None,
+            preview_texture: String::new(),
+            preview_background: 2,
+            created_map: None,
+            gallery_open: false,
+            gallery_scale: 1.0,
+            gallery_background: 2,
+            gallery_search: String::new(),
+            gallery_textures: HashMap::new(),
+            path_style_textures: HashMap::new(),
+            draw_mode_icons: load_draw_mode_icons(&self.cache_dir, ctx),
+            focused_last_frame: false,
+            render_settings_open: false,
+            render_settings,
+            full_preview_open: false,
+        });
+        Ok(())
+    }
+    fn open_csv_importer(&mut self, path: PathBuf) -> Result<()> {
+        let delimiter = svg_render::TableDelimiter::Auto;
+        let (encoding, table) =
+            match svg_render::read_table(&path, svg_render::TableEncoding::Utf8, delimiter) {
+                Ok(table) => (svg_render::TableEncoding::Utf8, table),
+                Err(_) => (
+                    svg_render::TableEncoding::Windows1252,
+                    svg_render::read_table(
+                        &path,
+                        svg_render::TableEncoding::Windows1252,
+                        delimiter,
+                    )?,
+                ),
+            };
+        let columns = svg_render::auto_table_columns(&table.headers);
+        let bounds = svg_render::table_bounds(&table, &columns, true);
+        let (source_x, source_y, source_width, source_height) =
+            bounds.as_ref().copied().unwrap_or((0., 0., 1., 1.));
+        let (map_width, map_height) = table_default_map_size(source_width, source_height);
+        self.csv_importer = Some(CsvImporterWindow {
+            path,
+            encoding,
+            delimiter,
+            table,
+            columns,
+            relative_after_first: true,
+            source_x,
+            source_y,
+            source_width,
+            source_height,
+            map_width,
+            map_height,
+            error: bounds.err().map(|error| error.to_string()),
+        });
+        self.status = "CSV table loaded; assign its columns and coordinate space".into();
+        Ok(())
+    }
+    fn load_svg_render_settings(&mut self, path: &Path) -> Result<()> {
+        let window = self
+            .svg_renderer
+            .as_mut()
+            .ok_or_else(|| Error::format("no SVG renderer is open"))?;
+        let source = fs::read_to_string(path).map_err(|error| Error::format(error.to_string()))?;
+        let saved: SavedRenderSettings =
+            serde_json::from_str(&source).map_err(|error| Error::format(error.to_string()))?;
+        let selected_by_class = saved
+            .rows
+            .iter()
+            .zip(&saved.render_settings.selected_layers)
+            .map(|(row, selected)| (row.class_name.as_str(), *selected))
+            .collect::<HashMap<_, _>>();
+        let mut loaded = 0;
+        for row in &mut window.rows {
+            if let Some(saved_row) = saved
+                .rows
+                .iter()
+                .find(|saved| saved.class_name == row.class_name)
+            {
+                *row = saved_row.clone();
+                loaded += 1;
+            }
+        }
+        let mut render_settings = saved.render_settings;
+        render_settings.selected_layers = window
+            .rows
+            .iter()
+            .map(|row| {
+                selected_by_class
+                    .get(row.class_name.as_str())
+                    .copied()
+                    .unwrap_or(true)
+            })
+            .collect();
+        render_settings.selection_drag = None;
+        window.render_settings = render_settings;
+        window.preview = None;
+        window.preview_texture.clear();
+        self.status = format!("Loaded JSON settings for {loaded} SVG classes");
+        Ok(())
+    }
+    fn save_svg_render_settings(&mut self, path: &Path) -> Result<()> {
+        let window = self
+            .svg_renderer
+            .as_ref()
+            .ok_or_else(|| Error::format("no SVG renderer is open"))?;
+        let saved = SavedRenderSettings {
+            version: 1,
+            rows: window.rows.clone(),
+            render_settings: window.render_settings.clone(),
+        };
+        let json = serde_json::to_string_pretty(&saved)
+            .map_err(|error| Error::format(error.to_string()))?;
+        fs::write(path, json).map_err(|error| Error::format(error.to_string()))?;
+        self.status = format!("Saved render settings JSON to {}", path.display());
+        Ok(())
+    }
+    fn rebuild_symbol_database(&mut self) -> Result<usize> {
+        let assets = Resolver::new(&self.settings).rebuild_symbol_database()?;
+        let count = assets.len();
+        if let Some(window) = self.svg_renderer.as_mut() {
+            window.assets = assets;
+            window.gallery_textures.clear();
+            window.preview = None;
+            window.preview_texture.clear();
+        }
+        self.status = format!("Rebuilt symbol database with {count} assets");
+        Ok(count)
+    }
+    fn begin_svg_render(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.svg_render_job.is_some() {
+            return;
+        }
+        let Some(window) = self.svg_renderer.as_ref() else {
+            return;
+        };
+        let selected_classes = window
+            .rows
+            .iter()
+            .zip(&window.render_settings.selected_layers)
+            .filter(|(_, selected)| **selected)
+            .map(|(row, _)| row.class_name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let document = window.document.cropped_for_render(
+            &selected_classes,
+            (
+                window.render_settings.source_x,
+                window.render_settings.source_y,
+                window.render_settings.source_width,
+                window.render_settings.source_height,
+            ),
+            window.render_settings.map_width,
+            window.render_settings.map_height,
+        );
+        let rows = window
+            .rows
+            .iter()
+            .zip(&window.render_settings.selected_layers)
+            .filter(|(_, selected)| **selected)
+            .map(|(row, _)| row.clone())
+            .collect::<Vec<_>>();
+        let resolver = Resolver::new(&self.settings);
+        let compressed = self.compressed;
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        let result_path = path.clone();
+        std::thread::spawn(move || {
+            let result = svg_render::render(&document, &rows, &resolver, &path, compressed);
+            let _ = sender.send((result_path, result));
+            repaint.request_repaint();
+        });
+        self.svg_render_job = Some(receiver);
+        self.status = "Rendering imported classes and creating a new Wonderdraft map…".into();
+    }
+    fn poll_svg_render(&mut self) {
+        let Some(receiver) = self.svg_render_job.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok((path, Ok(summary))) => {
+                if let Some(window) = self.svg_renderer.as_mut() {
+                    window.created_map = Some(path.clone());
+                }
+                self.status = format!(
+                    "Created {}: {} symbols, {} paths, {} territories, {} labels",
+                    path.display(),
+                    summary.symbols,
+                    summary.paths,
+                    summary.territories,
+                    summary.labels
+                );
+            }
+            Ok((_, Err(error))) => self.fail("Could not create Wonderdraft map", error),
+            Err(TryRecvError::Empty) => self.svg_render_job = Some(receiver),
+            Err(TryRecvError::Disconnected) => self.fail(
+                "Could not create Wonderdraft map",
+                "Render worker stopped unexpectedly",
+            ),
+        }
+    }
+    fn update_svg_symbol_preview(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        let Some(row) = window.rows.get(window.selected) else {
+            return;
+        };
+        if row.symbol == window.preview_texture {
+            return;
+        }
+        window.preview_texture = row.symbol.clone();
+        window.preview = None;
+        let Some(asset) = window
+            .assets
+            .iter()
+            .find(|asset| asset.texture == row.symbol)
+        else {
+            return;
+        };
+        let image = image::open(&asset.path).or_else(|original_error| {
+            let is_svg = asset
+                .path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("svg"));
+            if !is_svg {
+                return Err(original_error);
+            }
+            let preview_path = self
+                .cache_dir
+                .join(format!("svg_symbol_preview_{}.png", window.selected));
+            let _ = fs::remove_file(&preview_path);
+            svg_render::render_preview(&asset.path, &preview_path, 256, 256)
+                .map_err(|_| original_error)?;
+            image::open(preview_path)
+        });
+        let Ok(image) = image else { return };
+        let rgba = image.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        window.preview = Some(ctx.load_texture(
+            format!("svg-render-preview:{}", row.symbol),
+            color_image,
+            egui::TextureOptions::LINEAR,
+        ));
+    }
+    fn show_symbol_gallery(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        if !window.gallery_open {
+            return;
+        }
+        let mut selected_texture = None;
+        let still_open = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("svg-symbol-gallery-window"),
+            egui::ViewportBuilder::default()
+                .with_title("Symbol gallery")
+                .with_always_on_top()
+                .with_inner_size([1040.0, 760.0])
+                .with_min_inner_size([620.0, 440.0]),
+            |ui, _| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    return false;
+                }
+                let focused = ui.input(|input| input.focused);
+                if focused && !window.focused_last_frame {
+                    // Raising the parent first, then this child viewport, keeps
+                    // the main editor immediately behind the render window.
+                    ui.ctx()
+                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                window.focused_last_frame = focused;
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{} available core, pack, and custom symbols",
+                        window.assets.len()
+                    ));
+                    ui.separator();
+                    ui.label("Find");
+                    ui.text_edit_singleline(&mut window.gallery_search);
+                    ui.separator();
+                    ui.label("Tile scale");
+                    ui.add(
+                        egui::Slider::new(&mut window.gallery_scale, 0.5..=2.0).show_value(true),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Background");
+                    ui.selectable_value(&mut window.gallery_background, 0, "Black");
+                    ui.selectable_value(&mut window.gallery_background, 1, "White");
+                    ui.selectable_value(&mut window.gallery_background, 2, "Checkerboard");
+                    ui.small("Double-click a symbol to select it.");
+                });
+                ui.separator();
+                let query = window.gallery_search.to_lowercase();
+                let assets = window
+                    .assets
+                    .iter()
+                    .filter(|asset| {
+                        query.is_empty() || asset.texture.to_lowercase().contains(&query)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let tile = 116.0 * window.gallery_scale;
+                let columns = (ui.available_width() / tile).floor().max(1.0) as usize;
+                egui::ScrollArea::vertical()
+                    .id_salt("symbol-gallery-scroll")
+                    .show(ui, |ui| {
+                        egui::Grid::new("symbol-gallery-grid")
+                            .num_columns(columns)
+                            .spacing(egui::vec2(6.0, 8.0))
+                            .show(ui, |ui| {
+                                for row in assets.chunks(columns) {
+                                    for asset in row {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(tile, tile + 30.0),
+                                            egui::Sense::click(),
+                                        );
+                                        let image_rect = egui::Rect::from_min_size(
+                                            rect.min,
+                                            egui::vec2(tile, tile),
+                                        );
+                                        let is_selected = window
+                                            .rows
+                                            .get(window.selected)
+                                            .is_some_and(|row| row.symbol == asset.texture);
+                                        paint_preview_background(
+                                            ui.painter(),
+                                            image_rect,
+                                            window.gallery_background,
+                                        );
+                                        if let Some(texture) = gallery_texture(window, asset, ctx) {
+                                            let padding = (tile * 0.08).max(4.0);
+                                            let bounds = image_rect.shrink(padding);
+                                            ui.painter().image(
+                                                texture.id(),
+                                                fit_rect(bounds, texture.size_vec2()),
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                egui::Color32::WHITE,
+                                            );
+                                        } else {
+                                            ui.painter().text(
+                                                image_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "Preview\nunavailable",
+                                                egui::FontId::proportional(12.0),
+                                                egui::Color32::GRAY,
+                                            );
+                                        }
+                                        if let Some(icon) =
+                                            window.draw_mode_icons.get(&asset.draw_mode)
+                                        {
+                                            let icon_rect = egui::Rect::from_min_size(
+                                                image_rect.min + egui::vec2(4.0, 4.0),
+                                                egui::vec2(22.0, 22.0),
+                                            );
+                                            ui.painter().rect_filled(
+                                                icon_rect.expand(2.0),
+                                                3.0,
+                                                egui::Color32::from_black_alpha(180),
+                                            );
+                                            ui.painter().image(
+                                                icon.id(),
+                                                icon_rect,
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                egui::Color32::WHITE,
+                                            );
+                                        }
+                                        let label = asset
+                                            .texture
+                                            .rsplit('/')
+                                            .next()
+                                            .unwrap_or(&asset.texture);
+                                        ui.painter().text(
+                                            egui::pos2(rect.center().x, rect.max.y - 2.0),
+                                            egui::Align2::CENTER_BOTTOM,
+                                            truncate_label(label, 19),
+                                            egui::FontId::proportional(12.0),
+                                            ui.visuals().text_color(),
+                                        );
+                                        if is_selected {
+                                            ui.painter().rect_stroke(
+                                                rect.shrink(1.0),
+                                                4.0,
+                                                egui::Stroke::new(
+                                                    3.0,
+                                                    egui::Color32::from_rgb(80, 190, 255),
+                                                ),
+                                                egui::StrokeKind::Inside,
+                                            );
+                                            ui.painter().text(
+                                                rect.min + egui::vec2(6.0, 5.0),
+                                                egui::Align2::LEFT_TOP,
+                                                "Selected",
+                                                egui::FontId::proportional(12.0),
+                                                egui::Color32::from_rgb(80, 190, 255),
+                                            );
+                                        }
+                                        if response.clicked() {
+                                            selected_texture = Some(asset.texture.clone());
+                                        }
+                                        if response.double_clicked() {
+                                            window.gallery_open = false;
+                                        }
+                                        response.on_hover_text(&asset.texture);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                true
+            },
+        );
+        if !still_open {
+            window.gallery_open = false;
+        }
+        if let Some(texture) = selected_texture {
+            if let Some(row) = window.rows.get_mut(window.selected) {
+                row.symbol = texture;
+            }
+            self.update_svg_symbol_preview(ctx);
+        }
+    }
+    fn show_full_render_preview(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        if !window.full_preview_open {
+            return;
+        }
+        let source_bounds = window.document.data_bounds().unwrap_or((
+            0.0,
+            0.0,
+            window.document.width as f64,
+            window.document.height as f64,
+        ));
+        let still_open = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("svg-render-full-preview-window"),
+            egui::ViewportBuilder::default()
+                .with_title("Full render preview — 1 coordinate = 1 pixel")
+                .with_inner_size([1000.0, 760.0])
+                .with_min_inner_size([500.0, 360.0]),
+            |ui, _| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    return false;
+                }
+                let class_name = window
+                    .render_settings
+                    .preview_layer
+                    .filter(|index| {
+                        window.render_settings.selected_layers.get(*index) == Some(&true)
+                    })
+                    .and_then(|index| window.rows.get(index))
+                    .map(|row| row.class_name.clone());
+                if let Some(class_name) = class_name {
+                    egui::ScrollArea::both()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            paint_source_viewport_preview(
+                                ui,
+                                &window.document,
+                                &class_name,
+                                source_bounds,
+                                &mut window.render_settings,
+                                true,
+                            );
+                        });
+                } else {
+                    ui.label("Choose an imported preview layer in Render Settings first.");
+                }
+                true
+            },
+        );
+        if !still_open {
+            window.full_preview_open = false;
+        }
+    }
+
+    fn show_csv_importer(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.csv_importer.as_mut() else {
+            return;
+        };
+        let mut reload = false;
+        let mut update_bounds = false;
+        let mut continue_to_renderer = false;
+        let still_open = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("csv-render-import-window"),
+            egui::ViewportBuilder::default()
+                .with_title("Render from CSV — column mapping")
+                .with_inner_size([980.0, 760.0])
+                .with_min_inner_size([720.0, 520.0]),
+            |ui, _| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    return false;
+                }
+                ui.label(format!("Source: {}", window.path.display()));
+                ui.horizontal(|ui| {
+                    let old_encoding = window.encoding;
+                    egui::ComboBox::from_label("Encoding")
+                        .selected_text(window.encoding.label())
+                        .show_ui(ui, |ui| {
+                            for encoding in svg_render::TableEncoding::ALL {
+                                ui.selectable_value(
+                                    &mut window.encoding,
+                                    encoding,
+                                    encoding.label(),
+                                );
+                            }
+                        });
+                    let old_delimiter = window.delimiter;
+                    egui::ComboBox::from_label("Delimiter")
+                        .selected_text(window.delimiter.label())
+                        .show_ui(ui, |ui| {
+                            for delimiter in svg_render::TableDelimiter::ALL {
+                                ui.selectable_value(
+                                    &mut window.delimiter,
+                                    delimiter,
+                                    delimiter.label(),
+                                );
+                            }
+                        });
+                    reload = old_encoding != window.encoding || old_delimiter != window.delimiter;
+                    ui.label(format!(
+                        "{} columns, {} data rows",
+                        window.table.headers.len(),
+                        window.table.rows.len()
+                    ));
+                });
+                if let Some(error) = &window.error {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
+                ui.separator();
+                ui.heading("Assign table columns");
+                egui::Grid::new("csv-column-mapping")
+                    .num_columns(4)
+                    .spacing([18.0, 5.0])
+                    .show(ui, |ui| {
+                        update_bounds |= table_column_combo(ui, "Tag", &window.table.headers, &mut window.columns.tag);
+                        update_bounds |= table_column_combo(ui, "ID", &window.table.headers, &mut window.columns.id);
+                        ui.end_row();
+                        update_bounds |= table_column_combo(ui, "Name / label", &window.table.headers, &mut window.columns.name);
+                        update_bounds |= table_column_combo(ui, "Label content", &window.table.headers, &mut window.columns.content);
+                        ui.end_row();
+                        update_bounds |= table_column_combo(ui, "Class", &window.table.headers, &mut window.columns.class_name);
+                        update_bounds |= table_column_combo(ui, "Fill", &window.table.headers, &mut window.columns.fill);
+                        update_bounds |= table_column_combo(ui, "Stroke", &window.table.headers, &mut window.columns.stroke);
+                        ui.end_row();
+                        update_bounds |= table_column_combo(ui, "Stroke width", &window.table.headers, &mut window.columns.stroke_width);
+                        update_bounds |= table_column_combo(ui, "Coordinates", &window.table.headers, &mut window.columns.coordinates);
+                        ui.end_row();
+                    });
+                if ui
+                    .checkbox(
+                        &mut window.relative_after_first,
+                        "For paths, first pair is the absolute origin and remaining pairs are offsets",
+                    )
+                    .changed()
+                {
+                    update_bounds = true;
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.strong("Source viewport");
+                    ui.add(egui::DragValue::new(&mut window.source_x).prefix("X "));
+                    ui.add(egui::DragValue::new(&mut window.source_y).prefix("Y "));
+                    ui.add(egui::DragValue::new(&mut window.source_width).prefix("Width "));
+                    ui.add(egui::DragValue::new(&mut window.source_height).prefix("Height "));
+                    if ui.button("Fit to data").clicked() {
+                        update_bounds = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.strong("Wonderdraft map size");
+                    ui.add(egui::DragValue::new(&mut window.map_width).prefix("Width ").range(1..=65535));
+                    ui.add(egui::DragValue::new(&mut window.map_height).prefix("Height ").range(1..=65535));
+                });
+                ui.separator();
+                ui.heading("Preview");
+                egui::ScrollArea::both().max_height(280.0).show(ui, |ui| {
+                    egui::Grid::new("csv-table-preview").striped(true).show(ui, |ui| {
+                        for header in &window.table.headers {
+                            ui.strong(header);
+                        }
+                        ui.end_row();
+                        for row in window.table.rows.iter().take(12) {
+                            for index in 0..window.table.headers.len() {
+                                let value = row.get(index).map_or("", String::as_str);
+                                let shortened = value.chars().take(80).collect::<String>();
+                                ui.label(if value.chars().count() > 80 {
+                                    format!("{shortened}…")
+                                } else {
+                                    shortened
+                                })
+                                .on_hover_text(value);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        window.columns.class_name.is_some()
+                            && window.columns.coordinates.is_some()
+                            && window.map_width > 0
+                            && window.map_height > 0,
+                        egui::Button::new("Continue to render settings"),
+                    )
+                    .clicked()
+                {
+                    continue_to_renderer = true;
+                }
+                true
+            },
+        );
+        if !still_open {
+            self.csv_importer = None;
+            return;
+        }
+        if reload {
+            match svg_render::read_table(&window.path, window.encoding, window.delimiter) {
+                Ok(table) => {
+                    window.columns = svg_render::auto_table_columns(&table.headers);
+                    window.table = table;
+                    window.error = None;
+                    update_bounds = true;
+                }
+                Err(error) => window.error = Some(error.to_string()),
+            }
+        }
+        if update_bounds {
+            match svg_render::table_bounds(
+                &window.table,
+                &window.columns,
+                window.relative_after_first,
+            ) {
+                Ok((x, y, width, height)) => {
+                    window.source_x = x;
+                    window.source_y = y;
+                    window.source_width = width;
+                    window.source_height = height;
+                    window.error = None;
+                }
+                Err(error) => window.error = Some(error.to_string()),
+            }
+        }
+        if continue_to_renderer {
+            let options = svg_render::TableOptions {
+                columns: window.columns.clone(),
+                relative_after_first: window.relative_after_first,
+                source_x: window.source_x,
+                source_y: window.source_y,
+                source_width: window.source_width,
+                source_height: window.source_height,
+                map_width: window.map_width,
+                map_height: window.map_height,
+            };
+            match svg_render::analyze_table(&window.path, &window.table, &options) {
+                Ok(document) => {
+                    let class_count = document.classes.len();
+                    self.csv_importer = None;
+                    match self.open_render_document(document, ctx) {
+                        Ok(()) => {
+                            self.status = format!(
+                                "Converted CSV table to {class_count} classes; configure rendering"
+                            );
+                        }
+                        Err(error) => self.fail("Could not open CSV renderer", error),
+                    }
+                }
+                Err(error) => window.error = Some(error.to_string()),
+            }
+        }
+    }
+
+    fn show_svg_renderer(&mut self, ctx: &egui::Context) {
+        let Some(window) = self.svg_renderer.as_mut() else {
+            return;
+        };
+        let mut load_csv = false;
+        let mut save_csv = false;
+        let mut render_map = false;
+        let mut load_created_map = false;
+        let mut dropped_load_settings = None;
+        let mut dropped_created_map = None;
+        let mut preview_changed = false;
+        let mut propagated_name: Option<(usize, String)> = None;
+        let table_source = window
+            .document
+            .source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "csv" | "tsv" | "txt"
+                )
+            });
+        let still_open = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("svg-renderer-window"),
+            egui::ViewportBuilder::default()
+                .with_title("Render as new Wonderdraft map")
+                .with_inner_size([920.0, 720.0])
+                .with_min_inner_size([680.0, 500.0]),
+            |ui, _| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    return false;
+                }
+                ui.label(format!("{} × {} map pixels — {}", window.document.width, window.document.height, if window.document.layer_fallback { "using Inkscape layers as classes" } else if table_source { "using table classes" } else { "using SVG classes" }));
+                ui.horizontal(|ui| {
+                    let load_settings = ui.button("Load settings JSON…");
+                    if load_settings.clicked() { load_csv = true; }
+                    dropped_load_settings = dropped_path_over(ui, &load_settings, is_json_file);
+                    if ui.button("Save settings JSON…").clicked() { save_csv = true; }
+                    ui.separator();
+                    if ui.button("Render settings…").clicked() {
+                        window.render_settings_open = true;
+                    }
+                    if ui.add_enabled(self.svg_render_job.is_none(), egui::Button::new("Create .wonderdraft_map…")).clicked() { render_map = true; }
+                    let load_created = ui.add_enabled(
+                        window.created_map.is_some() && self.map_load.is_none(),
+                        egui::Button::new("Load created .wonderdraft_map"),
+                    );
+                    if load_created.clicked() {
+                        load_created_map = true;
+                    }
+                    dropped_created_map = dropped_path_over(ui, &load_created, is_wonderdraft_map);
+                    if self.svg_render_job.is_some() { ui.spinner(); ui.label("Rendering…"); }
+                });
+                if self.svg_render_job.is_none()
+                    && let Some(path) = &window.created_map
+                {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_GREEN,
+                        format!("Created: {}", path.display()),
+                    );
+                }
+                ui.separator();
+                ui.columns(2, |columns| {
+                    columns[0].heading("Classes / layers");
+                    let class_row_height = columns[0].spacing().interact_size.y;
+                    egui::ScrollArea::vertical().id_salt("svg-render-classes").show_rows(
+                        &mut columns[0],
+                        class_row_height,
+                        window.rows.len(),
+                        |ui, visible_rows| {
+                        for index in visible_rows {
+                            let row = &window.rows[index];
+                            if ui.selectable_label(window.selected == index, format!("{}  →  {}", row.class_name, row.category.label())).clicked() {
+                                window.selected = index;
+                                preview_changed = true;
+                            }
+                        }
+                    });
+                    columns[1].heading("Translation settings");
+                    let selected = window.selected;
+                    let assets = &window.assets;
+                    let draw_mode_icons = &window.draw_mode_icons;
+                    let path_styles = &window.path_styles;
+                    let path_style_textures = &mut window.path_style_textures;
+                    let preview = &window.preview;
+                    let preview_background = &mut window.preview_background;
+                    if let Some(row) = window.rows.get_mut(selected) {
+                        egui::ScrollArea::vertical().id_salt("svg-render-settings").show(&mut columns[1], |ui| {
+                            ui.strong(&row.class_name);
+                            egui::ComboBox::from_label("Category").selected_text(row.category.label()).show_ui(ui, |ui| {
+                                for category in svg_render::Category::ALL { ui.selectable_value(&mut row.category, category, category.label()); }
+                            });
+                            ui.checkbox(&mut row.as_trace, "Use this layer/class as tracing image");
+                            if row.as_trace { ui.small("The selected SVG layer/class is rasterized as Wonderdraft's trace overlay."); }
+                            if row.category == svg_render::Category::Invisible { ui.small("Invisible elements are not written to the map."); return; }
+                            if row.category == svg_render::Category::Label {
+                                ui.label("Label text: SVG <text> content");
+                                ui.checkbox(&mut row.label.match_svg_style, "Match SVG text style");
+                            } else {
+                                ui.horizontal(|ui| { ui.label("Name attribute"); if ui.text_edit_singleline(&mut row.name_attribute).changed() { propagated_name=Some((selected,row.name_attribute.clone())); } });
+                            }
+                            ui.horizontal(|ui| {
+                                if row.category == svg_render::Category::Label {
+                                    ui.label("Create a label for every text element");
+                                } else {
+                                    ui.checkbox(&mut row.label.enabled, "Create label");
+                                }
+                                ui.add_enabled_ui(row.category == svg_render::Category::Label || row.label.enabled, |ui| {
+                                    ui.checkbox(&mut row.label.prepend_class, "Prepend class");
+                                });
+                            });
+                            if row.category == svg_render::Category::Label || row.label.enabled {
+                                ui.indent("label-options", |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Font");
+                                        ui.text_edit_singleline(&mut row.label.font);
+                                        egui::ComboBox::from_id_salt(("label-font", selected))
+                                            .selected_text("Presets")
+                                            .show_ui(ui, |ui| {
+                                                for font in svg_render::LABEL_FONT_PRESETS {
+                                                    if ui.selectable_label(row.label.font == *font, *font).clicked() {
+                                                        row.label.font = (*font).into();
+                                                        ui.close();
+                                                    }
+                                                }
+                                            });
+                                    });
+                                    ui.add(egui::Slider::new(&mut row.label.size, 4.0..=200.0).text("Size"));
+                                    egui::ComboBox::from_label("Alignment")
+                                        .selected_text(match row.label.align {
+                                            1 => "Center align",
+                                            2 => "Right align",
+                                            _ => "Left align",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut row.label.align, 0, "Left align");
+                                            ui.selectable_value(&mut row.label.align, 1, "Center align");
+                                            ui.selectable_value(&mut row.label.align, 2, "Right align");
+                                        });
+                                    color_control(ui, "Color", &mut row.label.color);
+                                    color_control(ui, "Outline", &mut row.label.outline_color);
+                                    ui.add(egui::Slider::new(&mut row.label.outline, 0.0..=20.0).text("Outline width"));
+                                    ui.horizontal(|ui| { ui.add(egui::DragValue::new(&mut row.label.offset_x).prefix("Offset X ")); ui.add(egui::DragValue::new(&mut row.label.offset_y).prefix("Offset Y ")); });
+                                });
+                            }
+                            ui.separator();
+                            match row.category {
+                                svg_render::Category::Symbol => {
+                                    ui.label("Wonderdraft symbol");
+                                    if ui.text_edit_singleline(&mut row.symbol).changed() { preview_changed=true; }
+                                    if ui.button("Symbol gallery…").clicked() { window.gallery_open = true; }
+                                    ui.menu_button("Matching symbols…", |ui| {
+                                        let query=row.symbol.to_lowercase();
+                                        let mut shown=0;
+                                        egui::ScrollArea::vertical().max_height(230.).show(ui, |ui| {
+                                            for asset in assets {
+                                                let label=asset.texture.rsplit('/').next().unwrap_or(&asset.texture);
+                                                if !query.is_empty() && !asset.texture.to_lowercase().contains(&query) { continue; }
+                                                if ui.button(label).on_hover_text(&asset.texture).clicked() { row.symbol=asset.texture.clone(); preview_changed=true; ui.close(); }
+                                                shown+=1; if shown>=250 { break; }
+                                            }
+                                            if shown==0 { ui.label("No matching configured assets"); }
+                                        });
+                                    });
+                                    ui.scope(|ui| {
+                                        ui.spacing_mut().slider_width *= 2.0;
+                                        ui.add(
+                                            egui::Slider::from_get_set(0.0..=100.0, |position| {
+                                                if let Some(position) = position {
+                                                    row.symbol_scale = symbol_scale_after_slider_move(
+                                                        row.symbol_scale,
+                                                        position,
+                                                    );
+                                                }
+                                                slider_position_for_symbol_scale(row.symbol_scale)
+                                            })
+                                            .step_by(1.0)
+                                            .show_value(false)
+                                            .text("Scale"),
+                                        );
+                                    });
+                                    ui.small("Slider positions: 0 (left), 1× (middle), 100 (right); each step changes scale by 10%.");
+                                    ui.horizontal(|ui| {
+                                        ui.label("Current scale");
+                                        ui.add(
+                                            egui::DragValue::new(&mut row.symbol_scale)
+                                                .custom_parser(parse_symbol_scale_text)
+                                                .custom_formatter(|value, _| {
+                                                    format_symbol_scale(value as f32)
+                                                }),
+                                        );
+                                    });
+                                    if let Some(asset) = assets
+                                        .iter()
+                                        .find(|asset| asset.texture == row.symbol)
+                                    {
+                                        ui.label(format!(
+                                            "Resulting size: {}",
+                                            format_pixel_dimensions(
+                                                asset.width * row.symbol_scale as f64,
+                                                asset.height * row.symbol_scale as f64,
+                                            )
+                                        ));
+                                    } else {
+                                        ui.label("Resulting size: unavailable");
+                                    }
+                                    let draw_mode = assets
+                                        .iter()
+                                        .find(|asset| asset.texture == row.symbol)
+                                        .map(|asset| asset.draw_mode.as_str())
+                                        .unwrap_or("normal");
+                                    ui.horizontal(|ui| {
+                                        ui.label("Draw mode");
+                                        if let Some(icon) = draw_mode_icons.get(draw_mode) {
+                                            ui.add(egui::Image::new(icon).fit_to_exact_size(egui::vec2(20.0, 20.0)));
+                                        }
+                                        ui.label(draw_mode_label(draw_mode));
+                                    });
+                                    match draw_mode {
+                                        "sample_color" => color_control(ui, "Tint / sample color", &mut row.tint),
+                                        "custom_colors" => {
+                                            color_control(ui, "Custom color 1", &mut row.custom_colors[0]);
+                                            color_control(ui, "Custom color 2", &mut row.custom_colors[1]);
+                                            color_control(ui, "Custom color 3", &mut row.custom_colors[2]);
+                                        }
+                                        _ => {
+                                            ui.small("Normal symbols use their original colors.");
+                                        }
+                                    }
+                                    ui.horizontal(|ui| { ui.label("Preview background"); ui.selectable_value(preview_background,0,"Black"); ui.selectable_value(preview_background,1,"White"); ui.selectable_value(preview_background,2,"Checkerboard"); });
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(260.,220.), egui::Sense::hover());
+                                    paint_preview_background(ui.painter(), rect, *preview_background);
+                                    if let Some(texture)=preview { ui.put(rect.shrink(8.), egui::Image::new(texture).fit_to_exact_size(rect.shrink(8.).size())); } else { ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,"Preview unavailable\n(select a PNG/WebP/JPEG symbol)",egui::FontId::proportional(14.),egui::Color32::GRAY); }
+                                }
+                                svg_render::Category::Path | svg_render::Category::Territory => {
+                                    egui::ComboBox::from_label(if row.category==svg_render::Category::Path {"Path style"} else {"Border style"})
+                                        .selected_text(path_style_label(&row.path_style))
+                                        .show_ui(ui, |ui| {
+                                            for style in path_styles {
+                                                ui.horizontal(|ui| {
+                                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(110.0, 24.0), egui::Sense::hover());
+                                                    ui.painter().rect_filled(rect, 2.0, egui::Color32::from_gray(35));
+                                                    if let Some(texture) = path_style_texture(path_style_textures, style, ctx) {
+                                                        ui.painter().image(texture.id(), rect.shrink2(egui::vec2(3.0, 5.0)), egui::Rect::from_min_max(egui::pos2(0.0,0.0),egui::pos2(1.0,1.0)), egui::Color32::WHITE);
+                                                    }
+                                                    if ui.selectable_label(row.path_style == style.texture, path_style_label(&style.texture)).clicked() { row.path_style = style.texture.clone(); }
+                                                });
+                                            }
+                                        });
+                                    color_control(ui,"Color",&mut row.path_color);
+                                    ui.add(egui::Slider::new(&mut row.width,0.1..=100.).text("Width"));
+                                    if row.category == svg_render::Category::Path {
+                                        ui.add(egui::Slider::new(&mut row.roughness, 0.0..=10.0).text("Roughness"));
+                                    }
+                                }
+                                svg_render::Category::Ground | svg_render::Category::WaterTint => {
+                                    optional_fill_control(ui, &mut row.fill_override, &mut row.no_fill_override);
+                                    optional_color_control(ui,"Border override",&mut row.border_override);
+                                    optional_width_control(ui,"Border width override",&mut row.border_width_override);
+                                    ui.small("‘Use SVG value’ preserves the element’s existing presentation value.");
+                                }
+                                svg_render::Category::Landmass => { ui.add(egui::Slider::new(&mut row.width,0.0..=100.).text("Black mask border width")); ui.small("Rendered black onto mask.png."); }
+                                svg_render::Category::FillWithLand => { ui.small("Fills the complete map mask with land. The selected class or layer geometry is ignored."); }
+                                svg_render::Category::Freshwater => {
+                                    freshwater_style_controls(ui, row);
+                                    ui.small("Freshwater renders after landmass classes. Apply fill uses red; a positive border width uses a red border.");
+                                }
+                                svg_render::Category::Label | svg_render::Category::Invisible => {}
+                            }
+                        });
+                    }
+                });
+                if window.render_settings_open {
+                    show_render_import_settings(ui.ctx(), window);
+                }
+                true
+            },
+        );
+        if let Some((selected, value)) = propagated_name {
+            for next in window.rows.iter_mut().skip(selected + 1) {
+                if next.name_attribute == "map:svgname" {
+                    next.name_attribute = value.clone();
+                }
+            }
+        }
+        if !still_open {
+            self.svg_renderer = None;
+            return;
+        }
+        let csv_file_name = window
+            .document
+            .source
+            .file_stem()
+            .map(|v| format!("{}_render_settings.json", v.to_string_lossy()))
+            .unwrap_or_else(|| "svg_render_settings.json".into());
+        let map_file_name = window
+            .document
+            .source
+            .file_stem()
+            .map(|v| format!("{}.wonderdraft_map", v.to_string_lossy()))
+            .unwrap_or_else(|| "rendered_svg.wonderdraft_map".into());
+        let created_map_to_load = dropped_created_map.or_else(|| {
+            if load_created_map {
+                window.created_map.clone()
+            } else {
+                None
+            }
+        });
+        if preview_changed {
+            self.update_svg_symbol_preview(ctx);
+        }
+        if load_csv {
+            self.begin_dialog(DialogAction::LoadRenderSettings, ctx);
+        }
+        if let Some(path) = dropped_load_settings {
+            if let Err(error) = self.load_svg_render_settings(&path) {
+                self.fail("Could not load render settings", error);
+            }
+        }
+        if save_csv {
+            self.begin_dialog(
+                DialogAction::SaveRenderSettings {
+                    file_name: csv_file_name,
+                },
+                ctx,
+            );
+        }
+        if render_map {
+            self.begin_dialog(
+                DialogAction::SaveRenderedMap {
+                    file_name: map_file_name,
+                },
+                ctx,
+            );
+        }
+        if let Some(path) = created_map_to_load {
+            self.begin_map_load(path, ctx);
+        }
     }
     fn export_image_to(&mut self, index: usize, path: &Path) -> Result<()> {
         let Some((key, value)) = self.images.get(index) else {
@@ -1216,10 +2510,41 @@ impl App {
     }
 }
 
+impl App {
+    fn show_overwrite_prompt(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.overwrite_prompt.clone() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Overwrite map file?")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Overwrite {}?", path.display()));
+                ui.horizontal(|ui| {
+                    if ui.button("Overwrite").clicked() {
+                        self.overwrite_prompt = None;
+                        if let Err(error) = self.save_to(&path) {
+                            self.fail("Could not save map", error);
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.overwrite_prompt = None;
+                    }
+                });
+            });
+        if !open {
+            self.overwrite_prompt = None;
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         self.poll_background_work(&ctx);
+        self.poll_svg_render();
         if ctx.input_mut(|input| {
             input.consume_shortcut(&egui::KeyboardShortcut::new(
                 egui::Modifiers::CTRL,
@@ -1230,31 +2555,6 @@ impl eframe::App for App {
             self.focus_search = true;
         }
 
-        let dropped_paths = ctx.input(|input| {
-            input
-                .raw
-                .dropped_files
-                .iter()
-                .filter_map(|file| file.path.clone())
-                .collect::<Vec<_>>()
-        });
-        if self.pending_dialog.is_some() || self.map_load.is_some() {
-            if !dropped_paths.is_empty() {
-                self.status =
-                    "Finish the current file operation before dropping another map".into();
-            }
-        } else if let Some(path) = dropped_paths
-            .into_iter()
-            .find(|path| is_wonderdraft_map(path))
-        {
-            self.begin_map_load(path, &ctx);
-        } else if ctx.input(|input| !input.raw.dropped_files.is_empty()) {
-            self.fail(
-                "Unsupported file",
-                "Drop a .wonderdraft_map file to open it",
-            );
-        }
-
         let busy = self.pending_dialog.is_some()
             || self.map_load.is_some()
             || self.pck_extraction.is_some()
@@ -1262,11 +2562,12 @@ impl eframe::App for App {
         let mut recent_selection = None;
         egui::Panel::top("toolbar").show(root_ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Open map"))
-                    .clicked()
-                {
+                let open_map = ui.add_enabled(!busy, egui::Button::new("Open map"));
+                if open_map.clicked() {
                     self.begin_dialog(DialogAction::OpenMap, &ctx);
+                }
+                if let Some(path) = dropped_path_over(ui, &open_map, is_wonderdraft_map) {
+                    self.begin_map_load(path, &ctx);
                 }
                 ui.add_enabled_ui(!busy, |ui| {
                     ui.menu_button("Open recent", |ui| {
@@ -1297,7 +2598,8 @@ impl eframe::App for App {
                 if ui.button("Validate text").clicked() {
                     self.validate()
                 }
-                if ui.button("Save map as…").clicked() {
+                let save_map = ui.button("Save map as…");
+                if save_map.clicked() {
                     let file_name = self
                         .root_path
                         .as_ref()
@@ -1306,7 +2608,29 @@ impl eframe::App for App {
                         .unwrap_or_else(|| "edited.wonderdraft_map".into());
                     self.begin_dialog(DialogAction::SaveMap { file_name }, &ctx);
                 }
-                if ui.button("Export SVG…").clicked() {
+                if let Some(path) = dropped_path_over(ui, &save_map, |path| {
+                    path.is_dir() || is_wonderdraft_map(path)
+                }) {
+                    if path.is_dir() {
+                        let file_name = self
+                            .root_path
+                            .as_ref()
+                            .and_then(|path| path.file_stem())
+                            .map(|stem| {
+                                format!("{}_edited.wonderdraft_map", stem.to_string_lossy())
+                            })
+                            .unwrap_or_else(|| "edited.wonderdraft_map".into());
+                        self.begin_dialog_in_directory(
+                            DialogAction::SaveMap { file_name },
+                            path,
+                            &ctx,
+                        );
+                    } else {
+                        self.overwrite_prompt = Some(path);
+                    }
+                }
+                let export_svg = ui.button("Export SVG…");
+                if export_svg.clicked() {
                     let file_name = self
                         .root_path
                         .as_ref()
@@ -1315,10 +2639,51 @@ impl eframe::App for App {
                         .unwrap_or_else(|| "wonderdraft_map.svg".into());
                     self.begin_dialog(DialogAction::ExportSvg { file_name }, &ctx);
                 }
-                if ui.button("Import SVG…").clicked() {
+                if let Some(path) = dropped_path_over(ui, &export_svg, |path| path.is_dir()) {
+                    let file_name = self
+                        .root_path
+                        .as_ref()
+                        .and_then(|path| path.file_stem())
+                        .map(|stem| format!("{}.svg", stem.to_string_lossy()))
+                        .unwrap_or_else(|| "wonderdraft_map.svg".into());
+                    self.begin_dialog_in_directory(
+                        DialogAction::ExportSvg { file_name },
+                        path,
+                        &ctx,
+                    );
+                }
+                let import_svg = ui.button("Import SVG…");
+                if import_svg.clicked() {
                     self.begin_dialog(DialogAction::ImportSvg, &ctx);
                 }
-                if ui.button("Export map data…").clicked() {
+                if let Some(path) = dropped_path_over(ui, &import_svg, is_svg_file) {
+                    if let Err(error) = self.import_svg_from(&path) {
+                        self.fail("Could not import SVG", error);
+                    }
+                }
+                let render_svg = ui.button("Render SVG…");
+                if render_svg.clicked() {
+                    self.begin_dialog(DialogAction::RenderSvg, &ctx);
+                }
+                if let Some(path) = dropped_path_over(ui, &render_svg, is_svg_file) {
+                    if let Err(error) = self.open_svg_renderer(path, &ctx) {
+                        self.fail("Could not open SVG renderer", error);
+                    }
+                }
+                if ui.button("Inkarnate → SVG…").clicked() {
+                    self.begin_dialog(DialogAction::InkarnateBackup, &ctx);
+                }
+                let render_csv = ui.button("Render from CSV…");
+                if render_csv.clicked() {
+                    self.begin_dialog(DialogAction::RenderCsv, &ctx);
+                }
+                if let Some(path) = dropped_path_over(ui, &render_csv, is_csv_file) {
+                    if let Err(error) = self.open_csv_importer(path) {
+                        self.fail("Could not open CSV renderer", error);
+                    }
+                }
+                let export_data = ui.button("Export map data…");
+                if export_data.clicked() {
                     let file_name = self
                         .root_path
                         .as_ref()
@@ -1326,6 +2691,19 @@ impl eframe::App for App {
                         .map(|stem| format!("{}_map_data.txt", stem.to_string_lossy()))
                         .unwrap_or_else(|| "wonderdraft_map_data.txt".into());
                     self.begin_dialog(DialogAction::ExportMapData { file_name }, &ctx);
+                }
+                if let Some(path) = dropped_path_over(ui, &export_data, |path| path.is_dir()) {
+                    let file_name = self
+                        .root_path
+                        .as_ref()
+                        .and_then(|path| path.file_stem())
+                        .map(|stem| format!("{}_map_data.txt", stem.to_string_lossy()))
+                        .unwrap_or_else(|| "wonderdraft_map_data.txt".into());
+                    self.begin_dialog_in_directory(
+                        DialogAction::ExportMapData { file_name },
+                        path,
+                        &ctx,
+                    );
                 }
                 if ui.button("Export all PNGs").clicked() {
                     self.begin_dialog(DialogAction::ExportAllImages, &ctx);
@@ -1336,6 +2714,13 @@ impl eframe::App for App {
                     self.settings_open = true;
                 }
             });
+            let map_drop = ui.add_sized(
+                [220.0, 24.0],
+                egui::Label::new("Drop .wonderdraft_map here").sense(egui::Sense::hover()),
+            );
+            if let Some(path) = dropped_path_over(ui, &map_drop, is_wonderdraft_map) {
+                self.begin_map_load(path, &ctx);
+            }
             ui.horizontal_wrapped(|ui| {
                 ui.label("Options:");
                 ui.checkbox(&mut self.compressed, "Compress saved map");
@@ -1377,6 +2762,11 @@ impl eframe::App for App {
         if let Some(path) = recent_selection {
             self.begin_map_load(path, &ctx);
         }
+        self.show_csv_importer(&ctx);
+        self.show_svg_renderer(&ctx);
+        self.show_full_render_preview(&ctx);
+        self.show_symbol_gallery(&ctx);
+        self.show_overwrite_prompt(&ctx);
         egui::Panel::right("images")
             .resizable(true)
             .default_size(280.)
@@ -1406,7 +2796,8 @@ impl eframe::App for App {
                             );
                         }
                     }
-                    if ui.button("Replace PNG").clicked() {
+                    let replace_png = ui.button("Replace PNG");
+                    if replace_png.clicked() {
                         if self.images.get(self.selected).is_some() {
                             self.begin_dialog(
                                 DialogAction::ReplaceImage {
@@ -1415,6 +2806,12 @@ impl eframe::App for App {
                                 &ctx,
                             );
                         }
+                    }
+                    if let Some(path) = dropped_path_over(ui, &replace_png, |path| {
+                        is_extension(path, &["png", "jpg", "jpeg", "webp"])
+                    }) && let Err(error) = self.replace_image_from(self.selected, &path, &ctx)
+                    {
+                        self.fail("Could not replace image", error);
                     }
                 });
                 if let Some((key, v)) = self.images.get(self.selected) {
@@ -1477,6 +2874,14 @@ impl eframe::App for App {
                 ));
             });
         egui::CentralPanel::default().show(root_ui, |ui| {
+            if self.svg_renderer.is_some() || self.csv_importer.is_some() {
+                ui.centered_and_justified(|ui| {
+                    ui.label(
+                        "Map-data editor paused while the CSV/render window is open to keep the interface responsive.",
+                    );
+                });
+                return;
+            }
             ui.label("Map data (Godot text syntax)");
             if self.search_open {
                 ui.horizontal(|ui| {
@@ -1622,6 +3027,18 @@ impl eframe::App for App {
                     {
                         self.begin_core_asset_setup(&ctx);
                     }
+                    ui.horizontal(|ui| {
+                        if ui.button("Rebuild symbol database").clicked() {
+                            match self.rebuild_symbol_database() {
+                                Ok(count) => self.status = format!("Rebuilt symbol database with {count} assets"),
+                                Err(error) => self.fail("Could not rebuild symbol database", error),
+                            }
+                        }
+                        ui.small(format!(
+                            "Database: {}",
+                            miracledraft_map_helper::assets::symbol_database_path().display()
+                        ));
+                    });
 
                     ui.separator();
                     ui.heading("Cache");
@@ -1657,6 +3074,7 @@ impl eframe::App for App {
                     ui.separator();
                     ui.heading("About");
                     ui.label(format!("{APP_NAME} {APP_VERSION}"));
+                    ui.label(format!("Build time: {BUILD_TIME}"));
                     ui.label("Native Wonderdraft map and SVG interchange editor");
                     ui.hyperlink_to(
                         "Project website and source code",
@@ -1700,22 +3118,6 @@ impl eframe::App for App {
         if self.setup_wizard_open {
             self.show_setup_wizard(&ctx);
         }
-
-        if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("file-drop-overlay"),
-            ));
-            let rect = ctx.content_rect();
-            painter.rect_filled(rect, 8.0, egui::Color32::from_black_alpha(190));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Drop a .wonderdraft_map file to open it",
-                egui::FontId::proportional(28.0),
-                egui::Color32::WHITE,
-            );
-        }
     }
 }
 
@@ -1747,6 +3149,38 @@ fn configured_directory(value: &str) -> bool {
     !value.trim().is_empty() && Path::new(value.trim()).is_dir()
 }
 
+fn table_default_map_size(source_width: f64, source_height: f64) -> (u32, u32) {
+    let longest = source_width.max(source_height).max(1.);
+    let scale = 4096. / longest;
+    (
+        (source_width * scale).round().clamp(1., 65535.) as u32,
+        (source_height * scale).round().clamp(1., 65535.) as u32,
+    )
+}
+
+fn table_column_combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    headers: &[String],
+    selected: &mut Option<usize>,
+) -> bool {
+    ui.label(label);
+    let old = *selected;
+    egui::ComboBox::from_id_salt(("csv-column", label))
+        .selected_text(
+            selected
+                .and_then(|index| headers.get(index))
+                .map_or("Not assigned", String::as_str),
+        )
+        .show_ui(ui, |ui| {
+            ui.selectable_value(selected, None, "Not assigned");
+            for (index, header) in headers.iter().enumerate() {
+                ui.selectable_value(selected, Some(index), header);
+            }
+        });
+    old != *selected
+}
+
 const MAP_SECTIONS: &[(&str, &str)] = &[
     ("Boxes", "\"boxes\": ["),
     ("Symbols", "\"symbols\": ["),
@@ -1758,6 +3192,40 @@ const MAP_SECTIONS: &[(&str, &str)] = &[
 
 fn map_number(value: Option<&Value>, default: f64) -> f64 {
     value.and_then(Value::as_f64).unwrap_or(default)
+}
+
+fn import_svg_text(
+    existing_text: &str,
+    source: &Path,
+    resolver: &Resolver,
+) -> Result<(String, svg::Summary)> {
+    let mut root = if existing_text.trim().is_empty() {
+        Value::dict()
+    } else {
+        let root = godot_text::parse(existing_text)?;
+        if !matches!(root, Value::Dictionary(_)) {
+            return Err(Error::format("root value must be a Dictionary"));
+        }
+        root
+    };
+    let summary = svg::import(&mut root, source, resolver)?;
+    Ok((godot_text::format(&root), summary))
+}
+
+fn quick_import_svg(
+    source: &Path,
+    resolver: &Resolver,
+) -> Result<Option<(images::PreparedTree, svg_render::RenderSummary)>> {
+    let document = svg_render::analyze(source)?;
+    let settings = svg_render::quick_import_settings(&document);
+    if settings
+        .iter()
+        .all(|row| row.category == svg_render::Category::Invisible)
+    {
+        return Ok(None);
+    }
+    let (root, summary) = svg_render::render_value(&document, &settings, resolver)?;
+    Ok(Some((images::prepare(&root), summary)))
 }
 
 fn map_vec2(value: Option<&Value>, default: (f64, f64)) -> (f64, f64) {
@@ -1833,6 +3301,759 @@ fn remove_off_canvas_symbols(root: &mut Value, resolver: &Resolver) -> usize {
     before - symbols.len()
 }
 
+fn color_control(ui: &mut egui::Ui, label: &str, value: &mut [u8; 4]) {
+    let mut color = egui::Color32::from_rgba_unmultiplied(value[0], value[1], value[2], value[3]);
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let id_salt = (label, value.as_ptr() as usize);
+        if large_color_edit_button(ui, &mut color, id_salt).changed() {
+            *value = color.to_array();
+        }
+        for (component, name) in value.iter_mut().zip(["R", "G", "B", "A"]) {
+            ui.add_sized(
+                egui::vec2(68.0, ui.spacing().interact_size.y),
+                egui::DragValue::new(component)
+                    .range(0..=255)
+                    .prefix(format!("{name}["))
+                    .suffix("]"),
+            );
+        }
+    });
+}
+
+// Increase COLOR_PICKER_VERTICAL_GAP if the hue/alpha strips should sit even
+// farther away from the two-dimensional color field.
+const COLOR_PICKER_SLIDER_WIDTH: f32 = 360.0;
+const COLOR_PICKER_VERTICAL_GAP: f32 = 14.0;
+
+fn large_color_edit_button(
+    ui: &mut egui::Ui,
+    color: &mut egui::Color32,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+) -> egui::Response {
+    let popup_id = ui.make_persistent_id(("large-color-picker", id_salt));
+    let is_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let border = egui::Stroke::new(
+        if is_open { 3.0 } else { 2.0 },
+        egui::Color32::from_rgb(255, 0, 255),
+    );
+    let mut response = ui.add_sized(
+        egui::vec2(32.0, ui.spacing().interact_size.y),
+        egui::Button::new("").fill(*color).stroke(border),
+    );
+    let mut changed = false;
+    egui::Popup::menu(&response)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(COLOR_PICKER_SLIDER_WIDTH + 20.0)
+        .show(|ui| {
+            // Both the two-dimensional color field and the rainbow hue strip
+            // use this width. The hue strip is rendered below the field.
+            ui.spacing_mut().slider_width = COLOR_PICKER_SLIDER_WIDTH;
+            ui.spacing_mut().item_spacing.y = COLOR_PICKER_VERTICAL_GAP;
+            changed = egui::color_picker::color_picker_color32(
+                ui,
+                color,
+                egui::color_picker::Alpha::OnlyBlend,
+            );
+        });
+    if changed {
+        response.mark_changed();
+    }
+    response
+}
+
+fn optional_color_control(ui: &mut egui::Ui, label: &str, value: &mut Option<[u8; 4]>) {
+    let mut enabled = value.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut enabled, label).changed() {
+            *value = enabled.then_some([0, 0, 0, 255]);
+        }
+        if let Some(color) = value {
+            color_control(ui, "", color);
+        } else {
+            ui.small("Use SVG value");
+        }
+    });
+}
+
+fn optional_fill_control(ui: &mut egui::Ui, value: &mut Option<[u8; 4]>, no_fill: &mut bool) {
+    let mut enabled = value.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut enabled, "Fill override").changed() {
+            *value = enabled.then_some([0, 0, 0, 255]);
+            if enabled {
+                *no_fill = false;
+            }
+        }
+        if let Some(color) = value {
+            color_control(ui, "", color);
+        } else {
+            ui.small("Use SVG value");
+        }
+    });
+    ui.indent("no-fill-override", |ui| {
+        if ui.checkbox(no_fill, "No fill").changed() && *no_fill {
+            *value = None;
+        }
+    });
+}
+
+fn optional_width_control(ui: &mut egui::Ui, label: &str, value: &mut Option<f32>) {
+    let mut enabled = value.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut enabled, label).changed() {
+            *value = enabled.then_some(1.0);
+        }
+        if let Some(width) = value {
+            ui.add(egui::DragValue::new(width).range(0.0..=100.0));
+        } else {
+            ui.small("Use SVG value");
+        }
+    });
+}
+
+fn freshwater_style_controls(ui: &mut egui::Ui, row: &mut svg_render::ClassSettings) {
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    let mut apply_fill = row.fill_override.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut apply_fill, "Apply fill").changed() {
+            row.fill_override = apply_fill.then_some(RED);
+            if apply_fill {
+                row.no_fill_override = false;
+            }
+        }
+        if let Some(fill) = &mut row.fill_override {
+            color_control(ui, "Fill", fill);
+        } else if row.no_fill_override {
+            ui.small("Fill: none");
+        } else {
+            ui.small("Fill: SVG value");
+        }
+    });
+
+    let mut border_width = row.border_width_override.unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        ui.label("Border width");
+        if ui
+            .add(egui::DragValue::new(&mut border_width).range(0.0..=100.0))
+            .changed()
+        {
+            if border_width == 0.0 {
+                row.border_width_override = None;
+                row.border_override = None;
+            } else {
+                row.border_width_override = Some(border_width);
+                row.border_override.get_or_insert(RED);
+            }
+        }
+        if let Some(border) = &mut row.border_override {
+            color_control(ui, "Border", border);
+        } else {
+            ui.small("Border: none");
+        }
+    });
+}
+
+fn show_render_import_settings(ctx: &egui::Context, window: &mut SvgRendererWindow) {
+    let presets: &[(&str, u32, u32)] = &[
+        ("Custom", 0, 0),
+        ("HD / 1080p (16:9)", 1920, 1080),
+        ("QHD / 2K (16:9)", 2560, 1440),
+        ("UHD / 4K (16:9)", 3840, 2160),
+        ("A4 Paper (300 DPI)", 2480, 3508),
+        ("US Letter (300 DPI)", 2550, 3300),
+        ("A3 Paper (300 DPI)", 3508, 4960),
+        ("Maximum (8192 × 8192)", 8192, 8192),
+    ];
+    let settings = &mut window.render_settings;
+    let source_bounds = window.document.data_bounds().unwrap_or((
+        0.0,
+        0.0,
+        window.document.width as f64,
+        window.document.height as f64,
+    ));
+    let selected_preset = presets
+        .iter()
+        .find(|(_, width, height)| *width == settings.map_width && *height == settings.map_height)
+        .map(|preset| preset.0)
+        .unwrap_or("Custom");
+    let mut open = true;
+    let mut apply = false;
+    egui::Window::new("Render Settings")
+        .open(&mut open)
+        .resizable(true)
+        .default_width(720.0)
+        .show(ctx, |ui| {
+            ui.heading("Output map dimensions");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_label("Preset")
+                    .selected_text(selected_preset)
+                    .show_ui(ui, |ui| {
+                        for (name, width, height) in presets {
+                            if *width == 0 {
+                                let _ = ui.selectable_label(selected_preset == *name, *name);
+                            } else if ui.selectable_label(selected_preset == *name, *name).clicked() {
+                                settings.map_width = *width;
+                                settings.map_height = *height;
+                                ui.close();
+                            }
+                        }
+                    });
+                let orientation = if settings.map_width == settings.map_height {
+                    "Square"
+                } else if settings.map_width > settings.map_height {
+                    "Landscape"
+                } else {
+                    "Portrait"
+                };
+                egui::ComboBox::from_label("Orientation")
+                    .selected_text(orientation)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(orientation == "Landscape", "Landscape").clicked() {
+                            if settings.map_width < settings.map_height {
+                                std::mem::swap(&mut settings.map_width, &mut settings.map_height);
+                            }
+                            ui.close();
+                        }
+                        if ui.selectable_label(orientation == "Portrait", "Portrait").clicked() {
+                            if settings.map_width > settings.map_height {
+                                std::mem::swap(&mut settings.map_width, &mut settings.map_height);
+                            }
+                            ui.close();
+                        }
+                        if ui.selectable_label(orientation == "Square", "Square").clicked() {
+                            let side = settings.map_width.max(settings.map_height);
+                            settings.map_width = side;
+                            settings.map_height = side;
+                            ui.close();
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut settings.map_width).range(512..=8192).prefix("Width "));
+                ui.add(egui::DragValue::new(&mut settings.map_height).range(512..=8192).prefix("Height "));
+                ui.label("pixels (512–8192)");
+            });
+            ui.separator();
+            ui.heading("Layers / classes to import");
+            ui.horizontal(|ui| {
+                if ui.button("Select all").clicked() { settings.selected_layers.fill(true); }
+                if ui.button("Deselect all").clicked() { settings.selected_layers.fill(false); }
+                ui.label(format!("{} of {} selected", settings.selected_layers.iter().filter(|value| **value).count(), settings.selected_layers.len()));
+            });
+            egui::ScrollArea::vertical().max_height(145.0).show(ui, |ui| {
+                for (index, row) in window.rows.iter().enumerate() {
+                    ui.checkbox(&mut settings.selected_layers[index], &row.class_name);
+                }
+            });
+            ui.separator();
+            ui.heading("Source viewport");
+            ui.label(format!(
+                "All data: X {:.2} to {:.2}, Y {:.2} to {:.2}  —  {:.2} × {:.2}",
+                source_bounds.0,
+                source_bounds.0 + source_bounds.2,
+                source_bounds.1,
+                source_bounds.1 + source_bounds.3,
+                source_bounds.2,
+                source_bounds.3,
+            ));
+            ui.small("This fixed viewport is the total coordinate range across all layers and classes.");
+            ui.heading("Selection area");
+            ui.small("Only points inside this rectangle are imported. The selection is scaled to the output map dimensions.");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut settings.source_x).prefix("X "));
+                ui.add(egui::DragValue::new(&mut settings.source_y).prefix("Y "));
+                ui.add(egui::DragValue::new(&mut settings.source_width).range(0.001..=1_000_000.0).prefix("Width "));
+                ui.add(egui::DragValue::new(&mut settings.source_height).range(0.001..=1_000_000.0).prefix("Height "));
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Reset selection to source viewport").clicked() {
+                    settings.source_x = source_bounds.0;
+                    settings.source_y = source_bounds.1;
+                    settings.source_width = source_bounds.2;
+                    settings.source_height = source_bounds.3;
+                }
+                if ui.button("Adjust output map aspect ratio to selection").clicked() {
+                    let longest = settings.map_width.max(settings.map_height) as f64;
+                    let aspect = settings.source_width / settings.source_height.max(f64::EPSILON);
+                    if aspect >= 1.0 {
+                        settings.map_width = longest.round() as u32;
+                        settings.map_height = (longest / aspect).round().clamp(512.0, 8192.0) as u32;
+                    } else {
+                        settings.map_width = (longest * aspect).round().clamp(512.0, 8192.0) as u32;
+                        settings.map_height = longest.round() as u32;
+                    }
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Preview layer");
+                egui::ComboBox::from_id_salt("render-settings-preview-layer")
+                    .selected_text(settings.preview_layer.and_then(|index| window.rows.get(index)).map(|row| row.class_name.as_str()).unwrap_or("No preview"))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut settings.preview_layer, None, "No preview");
+                        for (index, row) in window.rows.iter().enumerate() {
+                            if settings.selected_layers[index] {
+                                ui.selectable_value(&mut settings.preview_layer, Some(index), &row.class_name);
+                            }
+                        }
+                    });
+            });
+            if let Some(index) = settings.preview_layer.filter(|index| settings.selected_layers.get(*index) == Some(&true)) {
+                paint_source_viewport_preview(ui, &window.document, &window.rows[index].class_name, source_bounds, settings, false);
+                if ui.button("View full preview").clicked() {
+                    window.full_preview_open = true;
+                }
+            } else {
+                ui.small("Choose an imported layer or class to see its source viewport preview.");
+            }
+            ui.separator();
+            if ui.button("Apply settings").clicked() { apply = true; }
+        });
+    if apply {
+        settings.map_width = settings.map_width.clamp(512, 8192);
+        settings.map_height = settings.map_height.clamp(512, 8192);
+        settings.source_width = settings.source_width.max(0.001);
+        settings.source_height = settings.source_height.max(0.001);
+        window.render_settings_open = false;
+    } else if !open {
+        window.render_settings_open = false;
+    }
+}
+
+fn paint_source_viewport_preview(
+    ui: &mut egui::Ui,
+    document: &svg_render::Document,
+    class_name: &str,
+    source_bounds: (f64, f64, f64, f64),
+    settings: &mut RenderImportSettings,
+    full_size: bool,
+) {
+    let geometries = document.class_geometry(class_name);
+    let points = geometries.iter().flatten().copied().collect::<Vec<_>>();
+    if points.is_empty() {
+        ui.small("This layer has no point geometry to preview.");
+        return;
+    }
+    let (min_x, min_y, data_width, data_height) = source_bounds;
+    let size = if full_size {
+        egui::vec2(data_width as f32, data_height as f32)
+    } else {
+        let available_width = ui.available_width().min(680.0);
+        let available_height = 300.0;
+        let aspect = (data_width / data_height) as f32;
+        if available_width / available_height > aspect {
+            egui::vec2(available_height * aspect, available_height)
+        } else {
+            egui::vec2(available_width, available_width / aspect)
+        }
+    };
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
+    let to_screen = |point: (f64, f64)| {
+        egui::pos2(
+            rect.left() + ((point.0 - min_x) / data_width) as f32 * rect.width(),
+            rect.bottom() - ((point.1 - min_y) / data_height) as f32 * rect.height(),
+        )
+    };
+    let from_screen = |point: egui::Pos2| {
+        (
+            min_x + (point.x - rect.left()) as f64 / rect.width() as f64 * data_width,
+            min_y + (rect.bottom() - point.y) as f64 / rect.height() as f64 * data_height,
+        )
+    };
+    let selection_screen = egui::Rect::from_two_pos(
+        to_screen((
+            settings.source_x,
+            settings.source_y + settings.source_height,
+        )),
+        to_screen((settings.source_x + settings.source_width, settings.source_y)),
+    );
+    let handle_at = |pointer: egui::Pos2| {
+        let radius = 10.0;
+        let corners = [
+            (selection_screen.left_top(), SelectionHandle::NorthWest),
+            (selection_screen.right_top(), SelectionHandle::NorthEast),
+            (selection_screen.left_bottom(), SelectionHandle::SouthWest),
+            (selection_screen.right_bottom(), SelectionHandle::SouthEast),
+        ];
+        corners
+            .into_iter()
+            .find_map(|(corner, handle)| (corner.distance(pointer) <= radius).then_some(handle))
+            .or_else(|| {
+                selection_screen
+                    .contains(pointer)
+                    .then_some(SelectionHandle::Move)
+            })
+    };
+    if let Some(pointer) = response.hover_pos()
+        && let Some(handle) = handle_at(pointer)
+    {
+        let cursor = match handle {
+            SelectionHandle::NorthWest | SelectionHandle::SouthEast => egui::CursorIcon::ResizeNwSe,
+            SelectionHandle::NorthEast | SelectionHandle::SouthWest => egui::CursorIcon::ResizeNeSw,
+            SelectionHandle::Move => egui::CursorIcon::Grab,
+        };
+        response = response.on_hover_cursor(cursor);
+    }
+    if response.drag_started()
+        && let Some(pointer) = response.interact_pointer_pos()
+        && let Some(handle) = handle_at(pointer)
+    {
+        settings.selection_drag = Some(SelectionDrag {
+            handle,
+            pointer: from_screen(pointer),
+            x: settings.source_x,
+            y: settings.source_y,
+            width: settings.source_width,
+            height: settings.source_height,
+        });
+    }
+    if response.dragged()
+        && let (Some(drag), Some(pointer)) =
+            (settings.selection_drag, response.interact_pointer_pos())
+    {
+        let current = from_screen(pointer);
+        let dx = current.0 - drag.pointer.0;
+        let dy = current.1 - drag.pointer.1;
+        match drag.handle {
+            SelectionHandle::Move => {
+                settings.source_x = drag.x + dx;
+                settings.source_y = drag.y + dy;
+            }
+            SelectionHandle::NorthWest => {
+                settings.source_x = drag.x + dx;
+                settings.source_width = (drag.width - dx).max(0.001);
+                settings.source_height = (drag.height + dy).max(0.001);
+            }
+            SelectionHandle::NorthEast => {
+                settings.source_width = (drag.width + dx).max(0.001);
+                settings.source_height = (drag.height + dy).max(0.001);
+            }
+            SelectionHandle::SouthWest => {
+                settings.source_x = drag.x + dx;
+                settings.source_y = drag.y + dy;
+                settings.source_width = (drag.width - dx).max(0.001);
+                settings.source_height = (drag.height - dy).max(0.001);
+            }
+            SelectionHandle::SouthEast => {
+                settings.source_y = drag.y + dy;
+                settings.source_width = (drag.width + dx).max(0.001);
+                settings.source_height = (drag.height - dy).max(0.001);
+            }
+        }
+    }
+    if response.drag_stopped() {
+        settings.selection_drag = None;
+    }
+    let inside = |point: (f64, f64)| {
+        point.0 >= settings.source_x
+            && point.0 <= settings.source_x + settings.source_width
+            && point.1 >= settings.source_y
+            && point.1 <= settings.source_y + settings.source_height
+    };
+    for geometry in geometries {
+        if geometry.len() == 1 {
+            let color = if inside(geometry[0]) {
+                egui::Color32::RED
+            } else {
+                egui::Color32::from_rgb(105, 55, 55)
+            };
+            painter.circle_filled(to_screen(geometry[0]), 3.5, color);
+        } else {
+            for segment in geometry.windows(2) {
+                let color = if inside(segment[0]) && inside(segment[1]) {
+                    egui::Color32::from_rgb(65, 150, 255)
+                } else {
+                    egui::Color32::from_rgb(48, 75, 110)
+                };
+                painter.line_segment(
+                    [to_screen(segment[0]), to_screen(segment[1])],
+                    egui::Stroke::new(1.5, color),
+                );
+            }
+        }
+    }
+    let selection_min = to_screen((
+        settings.source_x,
+        settings.source_y + settings.source_height,
+    ));
+    let selection_max = to_screen((settings.source_x + settings.source_width, settings.source_y));
+    let selection_rect = egui::Rect::from_two_pos(selection_min, selection_max).intersect(rect);
+    painter.rect_stroke(
+        selection_rect,
+        0.0,
+        egui::Stroke::new(3.0, egui::Color32::YELLOW),
+        egui::StrokeKind::Inside,
+    );
+    for corner in [
+        selection_rect.left_top(),
+        selection_rect.right_top(),
+        selection_rect.left_bottom(),
+        selection_rect.right_bottom(),
+    ] {
+        painter.circle_filled(corner, 4.0, egui::Color32::YELLOW);
+    }
+    ui.small("Red: single points · Blue: multi-point geometry · pale data lies outside the yellow selection area.");
+}
+
+fn paint_preview_background(painter: &egui::Painter, rect: egui::Rect, background: usize) {
+    if background < 2 {
+        painter.rect_filled(
+            rect,
+            3.0,
+            if background == 0 {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            },
+        );
+    } else {
+        let tile = 14.0;
+        let columns = (rect.width() / tile).ceil() as usize;
+        let rows = (rect.height() / tile).ceil() as usize;
+        for y in 0..rows {
+            for x in 0..columns {
+                let cell = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(x as f32 * tile, y as f32 * tile),
+                    egui::vec2(tile, tile),
+                )
+                .intersect(rect);
+                painter.rect_filled(
+                    cell,
+                    0.0,
+                    if (x + y) % 2 == 0 {
+                        egui::Color32::from_gray(205)
+                    } else {
+                        egui::Color32::from_gray(245)
+                    },
+                );
+            }
+        }
+    }
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, egui::Color32::GRAY),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn gallery_texture(
+    window: &mut SvgRendererWindow,
+    asset: &miracledraft_map_helper::assets::AssetInfo,
+    ctx: &egui::Context,
+) -> Option<egui::TextureHandle> {
+    if let Some(texture) = window.gallery_textures.get(&asset.texture) {
+        return Some(texture.clone());
+    }
+    let image = image::open(&asset.path)
+        .ok()?
+        .thumbnail(128, 128)
+        .to_rgba8();
+    let texture = ctx.load_texture(
+        format!("symbol-gallery:{}", asset.texture),
+        egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    window
+        .gallery_textures
+        .insert(asset.texture.clone(), texture.clone());
+    Some(texture)
+}
+
+fn path_styles(resolver: &Resolver) -> Vec<PathStyleInfo> {
+    let mut roots = Vec::new();
+    if let Some(sprites) = &resolver.default
+        && let Some(root) = sprites.parent()
+    {
+        roots.push(root.join("textures/paths"));
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wonderdraft_files/textures/paths"));
+    let mut styles = Vec::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file()
+                || !path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("png"))
+            {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            styles.push(PathStyleInfo {
+                texture: format!("res://textures/paths/{stem}"),
+                path,
+            });
+        }
+    }
+    styles.sort_by(|left, right| left.texture.cmp(&right.texture));
+    styles.dedup_by(|left, right| left.texture == right.texture);
+    styles
+}
+
+fn path_style_texture(
+    textures: &mut HashMap<String, egui::TextureHandle>,
+    style: &PathStyleInfo,
+    ctx: &egui::Context,
+) -> Option<egui::TextureHandle> {
+    if let Some(texture) = textures.get(&style.texture) {
+        return Some(texture.clone());
+    }
+    let image = image::open(&style.path).ok()?.thumbnail(220, 48).to_rgba8();
+    let texture = ctx.load_texture(
+        format!("path-style:{}", style.texture),
+        egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    textures.insert(style.texture.clone(), texture.clone());
+    Some(texture)
+}
+
+fn path_style_label(texture: &str) -> String {
+    texture
+        .rsplit('/')
+        .next()
+        .unwrap_or(texture)
+        .trim_start_matches("path_")
+        .replace('_', " ")
+}
+
+fn draw_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "sample_color" => "Sample color",
+        "custom_colors" => "Three custom colors",
+        _ => "Normal",
+    }
+}
+
+fn load_draw_mode_icons(
+    cache_dir: &Path,
+    ctx: &egui::Context,
+) -> HashMap<String, egui::TextureHandle> {
+    let _ = fs::create_dir_all(cache_dir);
+    let mut icons = HashMap::new();
+    for (mode, name, bytes) in DRAW_MODE_ICONS {
+        let source = cache_dir.join(format!("draw_mode_{mode}_{name}"));
+        if fs::write(&source, bytes).is_err() {
+            continue;
+        }
+        let output = cache_dir.join(format!("draw_mode_{mode}.png"));
+        if !output.is_file() && svg_render::render_preview(&source, &output, 64, 64).is_err() {
+            continue;
+        }
+        let Ok(image) = image::open(&output) else {
+            continue;
+        };
+        let image = image.to_rgba8();
+        icons.insert(
+            (*mode).into(),
+            ctx.load_texture(
+                format!("draw-mode-{mode}"),
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width() as usize, image.height() as usize],
+                    image.as_raw(),
+                ),
+                egui::TextureOptions::LINEAR,
+            ),
+        );
+    }
+    icons
+}
+
+fn fit_rect(bounds: egui::Rect, source_size: egui::Vec2) -> egui::Rect {
+    let scale = (bounds.width() / source_size.x)
+        .min(bounds.height() / source_size.y)
+        .min(1.0);
+    egui::Rect::from_center_size(bounds.center(), source_size * scale)
+}
+
+fn truncate_label(value: &str, max_characters: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_characters {
+        value.to_owned()
+    } else {
+        format!(
+            "{}…",
+            value
+                .chars()
+                .take(max_characters.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
+const SYMBOL_SCALE_SLIDER_MIDDLE: f64 = 50.0;
+const SYMBOL_SCALE_STEP_FACTOR: f64 = 1.1;
+
+fn symbol_scale_at_slider(position: f64) -> f32 {
+    if position <= 0.0 {
+        0.0
+    } else {
+        SYMBOL_SCALE_STEP_FACTOR.powf(position - SYMBOL_SCALE_SLIDER_MIDDLE) as f32
+    }
+}
+
+fn slider_position_for_symbol_scale(scale: f32) -> f64 {
+    if !scale.is_finite() || scale <= 0.0 {
+        0.0
+    } else {
+        (SYMBOL_SCALE_SLIDER_MIDDLE + f64::from(scale).ln() / SYMBOL_SCALE_STEP_FACTOR.ln())
+            .clamp(0.0, 100.0)
+    }
+}
+
+fn symbol_scale_after_slider_move(current_scale: f32, requested_position: f64) -> f32 {
+    if requested_position <= 0.0 {
+        return 0.0;
+    }
+    if !current_scale.is_finite() || current_scale <= 0.0 {
+        return symbol_scale_at_slider(requested_position.round());
+    }
+    let current_position = slider_position_for_symbol_scale(current_scale).round();
+    let steps = requested_position.round() - current_position;
+    (f64::from(current_scale) * SYMBOL_SCALE_STEP_FACTOR.powf(steps)) as f32
+}
+
+fn format_symbol_scale(scale: f32) -> String {
+    if scale == 0.0 {
+        "0×".into()
+    } else if scale >= 10.0 {
+        format!("{scale:.1}×")
+    } else {
+        format!("{scale:.3}×")
+    }
+}
+
+fn parse_symbol_scale_text(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .trim_end_matches('×')
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn format_pixel_dimensions(width: f64, height: f64) -> String {
+    format!("{width:.1} × {height:.1} px")
+}
+
 fn format_byte_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -1846,6 +4067,47 @@ fn format_byte_size(bytes: u64) -> String {
     } else {
         format!("{value:.2} {}", UNITS[unit])
     }
+}
+
+fn dropped_path_over(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    accepts: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let pointer = ui.ctx().input(|input| input.pointer.hover_pos())?;
+    if !response.rect.contains(pointer) {
+        return None;
+    }
+    ui.ctx().input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .filter_map(|file| file.path.clone())
+            .find(|path| accepts(path))
+    })
+}
+
+fn is_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extensions
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        })
+}
+
+fn is_svg_file(path: &Path) -> bool {
+    is_extension(path, &["svg"])
+}
+
+fn is_csv_file(path: &Path) -> bool {
+    is_extension(path, &["csv", "tsv", "txt"])
+}
+
+fn is_json_file(path: &Path) -> bool {
+    is_extension(path, &["json"])
 }
 
 fn main() -> eframe::Result {
@@ -1898,6 +4160,56 @@ mod tests {
                 .len()
         );
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn import_svg_from_an_empty_editor_creates_layermap_data() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles/layermap.svg");
+        let (prepared, summary) = quick_import_svg(&fixture, &Resolver::new(&Settings::default()))
+            .expect("quick SVG import should render layermap")
+            .expect("layermap should match the built-in layer mapping");
+        assert_eq!((summary.labels, summary.symbols, summary.paths), (1, 5, 1));
+        assert_eq!(prepared.images.len(), 3);
+        assert_eq!(
+            prepared.editable.get("mask").and_then(Value::as_str),
+            Some(".mask.png")
+        );
+        assert_eq!(
+            prepared.editable.get("ground").and_then(Value::as_str),
+            Some(".ground.png")
+        );
+        assert_eq!(
+            prepared.editable.get("water_tint").and_then(Value::as_str),
+            Some(".water_tint.png")
+        );
+        for (key, filename) in [
+            ("ground", "layermap.ground.png"),
+            ("mask", "layermap.mask.png"),
+            ("water_tint", "layermap.water_tint.png"),
+        ] {
+            let expected = image::open(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("testfiles")
+                    .join(filename),
+            )
+            .unwrap()
+            .to_rgba8();
+            let (_, value) = prepared
+                .images
+                .iter()
+                .find(|(image_key, _)| image_key == key)
+                .unwrap();
+            let actual = image_info(value).unwrap();
+            assert_eq!((actual.width, actual.height), expected.dimensions());
+            assert_eq!(
+                actual
+                    .pixels
+                    .read_slice(0, actual.pixels.len() as usize)
+                    .unwrap(),
+                expected.as_raw().as_slice(),
+                "{key} image differs from {filename}"
+            );
+        }
     }
 
     #[test]
@@ -1955,5 +4267,17 @@ mod tests {
         assert_eq!(remove_off_canvas_symbols(&mut root, &resolver), 2);
         assert_eq!(root.get("symbols").unwrap().as_array().unwrap().len(), 2);
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn symbol_scale_slider_is_centered_and_compounds_by_ten_percent() {
+        assert_eq!(symbol_scale_at_slider(0.0), 0.0);
+        assert!((symbol_scale_at_slider(50.0) - 1.0).abs() < f32::EPSILON);
+        assert!((symbol_scale_at_slider(51.0) - 1.1).abs() < 0.000_001);
+        assert!((symbol_scale_at_slider(52.0) - 1.21).abs() < 0.000_001);
+        assert!((slider_position_for_symbol_scale(1.0) - 50.0).abs() < f64::EPSILON);
+        assert!((symbol_scale_after_slider_move(2.0, 58.0) - 2.2).abs() < 0.000_001);
+        assert_eq!(parse_symbol_scale_text("1,21×"), Some(1.21));
+        assert_eq!(parse_symbol_scale_text("1.21"), Some(1.21));
     }
 }
