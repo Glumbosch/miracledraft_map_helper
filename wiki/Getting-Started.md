@@ -52,3 +52,11 @@ most recent files remembered by the editor.
 4. Leave **Verify save** enabled and use **Save map as…** so the original is not
    overwritten.
 5. Open the new map in Wonderdraft and inspect the result.
+
+## Inkarnate workflow
+
+Choose **Inkarnate → SVG…**, select an Inkarnate v3 JSON backup, and select an
+SVG destination. The native converter recovers the preview image, land mask,
+paths, text, and grid into named SVG layers. Open that SVG with **Render SVG…**.
+To keep the original artwork visible while you configure the conversion, select
+the `Preview` layer and enable **Use this layer/class as tracing image**.

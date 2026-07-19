@@ -38,6 +38,7 @@ pub const LABEL_FONT_PRESETS: &[&str] = &[
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Category {
+    Label,
     Symbol,
     Path,
     Ground,
@@ -51,7 +52,8 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
+        Self::Label,
         Self::Symbol,
         Self::Path,
         Self::Ground,
@@ -64,6 +66,7 @@ impl Category {
     ];
     pub fn label(self) -> &'static str {
         match self {
+            Self::Label => "label",
             Self::Symbol => "symbol",
             Self::Path => "path",
             Self::Ground => "ground",
@@ -80,6 +83,8 @@ impl Category {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabelSettings {
     pub enabled: bool,
+    #[serde(default = "default_match_svg_style")]
+    pub match_svg_style: bool,
     #[serde(default)]
     pub prepend_class: bool,
     pub size: f32,
@@ -96,6 +101,7 @@ impl Default for LabelSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            match_svg_style: true,
             prepend_class: false,
             size: 24.,
             font: "Gentium Book Basic Bold".into(),
@@ -107,6 +113,10 @@ impl Default for LabelSettings {
             offset_y: 0.,
         }
     }
+}
+
+fn default_match_svg_style() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,6 +140,8 @@ pub struct ClassSettings {
     pub no_fill_override: bool,
     pub border_override: Option<[u8; 4]>,
     pub border_width_override: Option<f32>,
+    #[serde(default)]
+    pub as_trace: bool,
 }
 impl ClassSettings {
     fn new(class_name: String, name_attribute: &str) -> Self {
@@ -150,6 +162,7 @@ impl ClassSettings {
             no_fill_override: false,
             border_override: None,
             border_width_override: None,
+            as_trace: false,
         }
     }
 }
@@ -299,6 +312,7 @@ struct Instance {
     label_anchor: Option<(f64, f64)>,
     has_fill: bool,
     has_nodes: bool,
+    text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +392,7 @@ pub struct TableColumns {
     pub tag: Option<usize>,
     pub id: Option<usize>,
     pub name: Option<usize>,
+    pub content: Option<usize>,
     pub class_name: Option<usize>,
     pub fill: Option<usize>,
     pub stroke: Option<usize>,
@@ -437,6 +452,7 @@ pub fn auto_table_columns(headers: &[String]) -> TableColumns {
         tag: find(&["tag", "element", "element_type"]),
         id: find(&["id", "element_id"]),
         name: find(&["mapsvg_name", "mapsvgname", "name", "label"]),
+        content: find(&["content", "text", "label_text", "labeltext"]),
         class_name: find(&["class", "class_name", "classname", "layer"]),
         fill: find(&["fill", "fill_color", "fillcolor"]),
         stroke: find(&["stroke", "stroke_color", "strokecolor"]),
@@ -547,6 +563,9 @@ pub fn analyze_table(path: &Path, table: &TableData, options: &TableOptions) -> 
             .unwrap_or("")
             .trim();
         let name = table_value(row, options.columns.name).unwrap_or("").trim();
+        let content = table_value(row, options.columns.content)
+            .unwrap_or("")
+            .trim();
         let id = table_value(row, options.columns.id).unwrap_or("").trim();
         let has_fill = !fill.is_empty() && !fill.eq_ignore_ascii_case("none");
         let has_nodes = matches!(
@@ -585,6 +604,7 @@ pub fn analyze_table(path: &Path, table: &TableData, options: &TableOptions) -> 
                 label_anchor: None,
                 has_fill,
                 has_nodes,
+                text: content.into(),
             });
         }
         append_table_svg_element(
@@ -627,6 +647,9 @@ struct ParseFrame {
     classes: Vec<String>,
     symbol: Option<String>,
     hidden: bool,
+    text_element: bool,
+    text: String,
+    pending_index: Option<usize>,
 }
 
 pub fn analyze(path: &Path) -> Result<Document> {
@@ -638,6 +661,9 @@ pub fn analyze(path: &Path) -> Result<Document> {
         classes: Vec::new(),
         symbol: None,
         hidden: false,
+        text_element: false,
+        text: String::new(),
+        pending_index: None,
     }];
     let mut class_names = HashSet::new();
     let mut layers = HashSet::new();
@@ -670,6 +696,9 @@ pub fn analyze(path: &Path) -> Result<Document> {
                     classes: Vec::new(),
                     symbol: None,
                     hidden: false,
+                    text_element: false,
+                    text: String::new(),
+                    pending_index: None,
                 });
                 let element_transform = parse_transform(attribute(&attrs, "transform"));
                 let nested_viewport = if tag == "svg" && !is_root_svg {
@@ -726,7 +755,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
                         .or_default()
                         .extend([(x, y), (x + w, y + h)]);
                 }
-                if is_drawable(&tag) && !hidden {
+                let pending_index = if is_drawable(&tag) && !hidden {
                     if let Some(id) = &current_symbol {
                         let definition_points = local_points(&tag, &attrs, &HashMap::new())
                             .into_iter()
@@ -736,8 +765,18 @@ pub fn analyze(path: &Path) -> Result<Document> {
                             .or_default()
                             .extend(definition_points);
                     }
-                    pending.push((tag, attrs, matrix, layer.clone(), active_classes.clone()));
-                }
+                    pending.push((
+                        tag.clone(),
+                        attrs,
+                        matrix,
+                        layer.clone(),
+                        active_classes.clone(),
+                        String::new(),
+                    ));
+                    Some(pending.len() - 1)
+                } else {
+                    None
+                };
                 if is_container {
                     stack.push(ParseFrame {
                         matrix,
@@ -745,12 +784,24 @@ pub fn analyze(path: &Path) -> Result<Document> {
                         classes: active_classes,
                         symbol: current_symbol,
                         hidden,
+                        text_element: tag == "text",
+                        text: String::new(),
+                        pending_index,
                     });
                 }
             }
+            Event::Text(event) => {
+                if let Some(frame) = stack.iter_mut().rev().find(|frame| frame.text_element) {
+                    frame.text.push_str(&event.decode().unwrap_or_default());
+                }
+            }
             Event::End(_) => {
-                if stack.len() > 1 {
-                    stack.pop();
+                if stack.len() > 1
+                    && let Some(frame) = stack.pop()
+                    && let Some(index) = frame.pending_index
+                    && let Some(item) = pending.get_mut(index)
+                {
+                    item.5 = frame.text;
                 }
             }
             Event::Eof => break,
@@ -773,7 +824,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
         .into_iter()
         .filter_map(|(id, points)| (!points.is_empty()).then(|| (id, bounds_center(&points))))
         .collect();
-    for (tag, attrs, matrix, layer, active_classes) in pending {
+    for (tag, attrs, matrix, layer, active_classes, text) in pending {
         let assigned = if layer_fallback {
             layer.into_iter().collect::<Vec<_>>()
         } else {
@@ -806,6 +857,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
                 label_anchor,
                 has_fill,
                 has_nodes: matches!(tag.as_str(), "path" | "polyline" | "polygon" | "line"),
+                text: text.clone(),
             });
         }
     }
@@ -902,6 +954,7 @@ pub fn render_value(
     let mut paths = Vec::new();
     let mut territories = Vec::new();
     let mut labels = Vec::new();
+    let trace_row = settings.iter().find(|row| row.as_trace);
     let source = document.source_svg.clone();
     let temp = crate::images::temp_cache_dir(&std::env::temp_dir())?;
     // Land first, freshwater second, regardless of class ordering.
@@ -964,9 +1017,22 @@ pub fn render_value(
                 }
                 _ => {}
             }
-            if row.category != Category::Invisible && row.label.enabled {
-                if let Some(text) = instance_name(instance, &row.name_attribute) {
-                    labels.push(label_record(row, label_text(row, &text), label_position));
+            if row.category != Category::Invisible
+                && (row.category == Category::Label || row.label.enabled)
+            {
+                let source = if row.category == Category::Label {
+                    (!instance.text.trim().is_empty()).then(|| instance.text.trim().to_owned())
+                } else {
+                    instance_name(instance, &row.name_attribute)
+                };
+                if let Some(text) = source {
+                    labels.push(label_record(
+                        row,
+                        label_text(row, &text),
+                        label_position,
+                        (row.category == Category::Label && row.label.match_svg_style)
+                            .then_some(instance.attrs.as_slice()),
+                    ));
                 }
             }
         }
@@ -975,6 +1041,15 @@ pub fn render_value(
     root.set("mask", image_value(mask));
     root.set("ground", image_value(ground));
     root.set("water_tint", image_value(water));
+    if let Some(row) = trace_row {
+        let css = raster_css(document, row);
+        let filtered = inject_style(&source, &css)?;
+        let svg_path = temp.join(format!("{}_trace.svg", safe_name(&row.class_name)));
+        let png_path = temp.join(format!("{}_trace.png", safe_name(&row.class_name)));
+        fs::write(&svg_path, filtered).map_err(|e| Error::format(e.to_string()))?;
+        render_external(&svg_path, &png_path, document.width, document.height)?;
+        root.set("trace", trace_value(image::open(&png_path)?.to_rgba8()));
+    }
     root.set("symbols", Value::Array(symbols));
     root.set("paths", Value::Array(paths));
     root.set("labels", Value::Array(labels));
@@ -1225,6 +1300,41 @@ fn image_value(image: RgbaImage) -> Value {
         )],
     }
 }
+
+fn trace_value(image: RgbaImage) -> Value {
+    let (width, height) = image.dimensions();
+    let texture = Value::Object {
+        class: "ImageTexture".into(),
+        properties: vec![
+            ("flags".into(), Value::Int(5)),
+            ("image".into(), image_value(image)),
+            ("size".into(), vec2(width as f64, height as f64)),
+            ("storage".into(), Value::Int(0)),
+        ],
+    };
+    let sprite = Value::Object {
+        class: "Sprite".into(),
+        properties: vec![
+            ("centered".into(), Value::Bool(true)),
+            (
+                "position".into(),
+                vec2(width as f64 / 2., height as f64 / 2.),
+            ),
+            ("texture".into(), texture),
+            ("modulate".into(), color([255, 255, 255, 184])),
+            ("visible".into(), Value::Bool(true)),
+            ("z_index".into(), Value::Int(3000)),
+        ],
+    };
+    dict(&[
+        ("image", sprite),
+        ("opacity", Value::Real(0.72)),
+        ("position", vec2(width as f64 / 2., height as f64 / 2.)),
+        ("rotation", Value::Real(0.)),
+        ("scale", Value::Real(1.)),
+        ("sort", Value::Int(3000)),
+    ])
+}
 fn symbol_record_at(
     row: &ClassSettings,
     instance: &Instance,
@@ -1318,8 +1428,35 @@ fn territory_record(row: &ClassSettings, instance: &Instance) -> Value {
     r.set("z_index", Value::Int(0));
     r
 }
-fn label_record(row: &ClassSettings, text: String, position: (f64, f64)) -> Value {
-    let s = &row.label;
+fn label_record(
+    row: &ClassSettings,
+    text: String,
+    position: (f64, f64),
+    svg_attrs: Option<&[(String, String)]>,
+) -> Value {
+    let mut settings = row.label.clone();
+    if let Some(attrs) = svg_attrs {
+        if let Some(font) = presentation(attrs, "font-family") {
+            settings.font = font.trim_matches(['\'', '"']).to_owned();
+        }
+        if let Some(size) = presentation(attrs, "font-size").and_then(parse_length) {
+            settings.size = size as f32;
+        }
+        if let Some(fill) = presentation(attrs, "fill").and_then(svg_color) {
+            settings.color = fill;
+        }
+        if let Some(opacity) =
+            presentation(attrs, "fill-opacity").and_then(|v| v.parse::<f32>().ok())
+        {
+            settings.color[3] = (opacity.clamp(0., 1.) * 255.).round() as u8;
+        }
+        settings.align = match presentation(attrs, "text-anchor") {
+            Some("middle") => 1,
+            Some("end") => 2,
+            _ => 0,
+        };
+    }
+    let s = &settings;
     let mut r = Value::dict();
     r.set("text", Value::String(text));
     r.set(
@@ -1342,6 +1479,31 @@ fn label_record(row: &ClassSettings, text: String, position: (f64, f64)) -> Valu
     r.set("glow_size", Value::Int(0));
     r.set("z_index", Value::Int(0));
     r
+}
+
+fn svg_color(value: &str) -> Option<[u8; 4]> {
+    let value = value.trim();
+    let hex = value.strip_prefix('#')?;
+    let byte = |part: &str| u8::from_str_radix(part, 16).ok();
+    match hex.len() {
+        3 => Some([
+            byte(&hex[0..1])? * 17,
+            byte(&hex[1..2])? * 17,
+            byte(&hex[2..3])? * 17,
+            255,
+        ]),
+        6 | 8 => Some([
+            byte(&hex[0..2])?,
+            byte(&hex[2..4])?,
+            byte(&hex[4..6])?,
+            if hex.len() == 8 {
+                byte(&hex[6..8])?
+            } else {
+                255
+            },
+        ]),
+        _ => None,
+    }
 }
 
 fn raster_css(document: &Document, row: &ClassSettings) -> String {
@@ -1517,7 +1679,16 @@ fn is_invisible(attrs: &[(String, String)]) -> bool {
 fn is_drawable(tag: &str) -> bool {
     matches!(
         tag,
-        "path" | "polyline" | "polygon" | "line" | "rect" | "circle" | "ellipse" | "use" | "image"
+        "path"
+            | "polyline"
+            | "polygon"
+            | "line"
+            | "rect"
+            | "circle"
+            | "ellipse"
+            | "use"
+            | "image"
+            | "text"
     )
 }
 fn parse_length(value: &str) -> Option<f64> {
@@ -1671,6 +1842,7 @@ fn local_points(
                 .unwrap_or((0., 0.));
             vec![(x + center.0, y + center.1)]
         }
+        "text" => vec![(f("x", 0.), f("y", 0.))],
         _ => vec![],
     }
 }
@@ -2104,6 +2276,42 @@ mod tests {
         let _ = fs::remove_file(p);
     }
     #[test]
+    fn label_category_uses_svg_text_content_and_style() {
+        let p = std::env::temp_dir().join("svg-render-text-label-test.svg");
+        fs::write(
+            &p,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="80"><text class="places" x="12" y="34" font-family="Lancelot" font-size="31" text-anchor="middle" fill="#ff0080">New Town</text></svg>"##,
+        )
+        .unwrap();
+        let document = analyze(&p).unwrap();
+        let mut row = ClassSettings::new("places".into(), "name");
+        row.category = Category::Label;
+        let (map, summary) =
+            render_value(&document, &[row], &Resolver::new(&Settings::default())).unwrap();
+        let label = &map.get("labels").and_then(Value::as_array).unwrap()[0];
+        assert_eq!(summary.labels, 1);
+        assert_eq!(label.get("text").and_then(Value::as_str), Some("New Town"));
+        assert_eq!(label.get("font").and_then(Value::as_str), Some("Lancelot"));
+        assert!(matches!(label.get("size"), Some(Value::Int(31))));
+        assert!(matches!(label.get("align"), Some(Value::Int(1))));
+        let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn tracing_image_uses_wonderdraft_sprite_structure() {
+        let trace = trace_value(RgbaImage::new(32, 16));
+        assert!(matches!(trace.get("sort"), Some(Value::Int(3000))));
+        let image = trace.get("image").unwrap();
+        assert!(matches!(image, Value::Object { class, .. } if class == "Sprite"));
+        let Value::Object { properties, .. } = image else {
+            panic!("trace image is not a Sprite")
+        };
+        let texture = properties
+            .iter()
+            .find_map(|(key, value)| (key == "texture").then_some(value))
+            .unwrap();
+        assert!(matches!(texture, Value::Object { class, .. } if class == "ImageTexture"));
+    }
+    #[test]
     fn selected_symbol_is_placed_at_each_distinct_path_node() {
         let p = std::env::temp_dir().join("svg-render-symbol-nodes.svg");
         fs::write(
@@ -2171,7 +2379,7 @@ mod tests {
         assert_eq!(label_text(&row, "Oakrest"), "Oakrest");
         row.label.prepend_class = true;
         assert_eq!(label_text(&row, "Oakrest"), "town: Oakrest");
-        let record = label_record(&row, "Oakrest".into(), (0., 0.));
+        let record = label_record(&row, "Oakrest".into(), (0., 0.), None);
         assert_eq!(record.get("align").and_then(Value::as_f64), Some(0.));
     }
     #[test]
@@ -2624,6 +2832,7 @@ mod tests {
             label_anchor: None,
             has_fill: false,
             has_nodes: false,
+            text: String::new(),
         };
         let record = symbol_record_at(&row, &instance, instance.center, &resolver);
         assert!(matches!(

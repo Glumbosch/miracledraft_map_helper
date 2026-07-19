@@ -6,7 +6,7 @@ use miracledraft_map_helper::{
     assets::Resolver,
     fonts, gcpf, godot_text,
     images::{self, BinaryBlobs, Images},
-    pck,
+    inkarnate, pck,
     settings::{self, Settings, WonderdraftConfig},
     svg, svg_render,
     value::image_info,
@@ -193,6 +193,8 @@ enum DialogAction {
     ImportSvg,
     RenderSvg,
     RenderCsv,
+    InkarnateBackup,
+    SaveInkarnateSvg { source: PathBuf, file_name: String },
     LoadRenderSettings,
     SaveRenderSettings { file_name: String },
     SaveRenderedMap { file_name: String },
@@ -400,6 +402,15 @@ impl App {
                     .set_directory(open_directory.clone().unwrap_or_default())
                     .add_filter("Delimited table", &["csv", "tsv", "txt"])
                     .pick_file(),
+                DialogAction::InkarnateBackup => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .add_filter("Inkarnate backup", &["json"])
+                    .pick_file(),
+                DialogAction::SaveInkarnateSvg { file_name, .. } => rfd::FileDialog::new()
+                    .set_directory(open_directory.clone().unwrap_or_default())
+                    .set_file_name(file_name)
+                    .add_filter("SVG", &["svg"])
+                    .save_file(),
                 DialogAction::LoadRenderSettings => rfd::FileDialog::new()
                     .set_directory(open_directory.clone().unwrap_or_default())
                     .add_filter("Render settings JSON", &["json"])
@@ -629,6 +640,23 @@ impl App {
             DialogAction::ImportSvg => self.import_svg_from(&path),
             DialogAction::RenderSvg => self.open_svg_renderer(path, ctx),
             DialogAction::RenderCsv => self.open_csv_importer(path),
+            DialogAction::InkarnateBackup => {
+                let file_name = format!(
+                    "{}.svg",
+                    path.file_stem().unwrap_or_default().to_string_lossy()
+                );
+                self.begin_dialog(
+                    DialogAction::SaveInkarnateSvg {
+                        source: path,
+                        file_name,
+                    },
+                    ctx,
+                );
+                return;
+            }
+            DialogAction::SaveInkarnateSvg { source, .. } => {
+                self.convert_inkarnate_to_svg(&source, &path)
+            }
             DialogAction::LoadRenderSettings => self.load_svg_render_settings(&path),
             DialogAction::SaveRenderSettings { .. } => self.save_svg_render_settings(&path),
             DialogAction::SaveRenderedMap { .. } => {
@@ -1369,6 +1397,12 @@ impl App {
         };
         Ok(())
     }
+
+    fn convert_inkarnate_to_svg(&mut self, source: &Path, destination: &Path) -> Result<()> {
+        inkarnate::convert(source, destination)?;
+        self.status = format!("Converted Inkarnate backup to {}", destination.display());
+        Ok(())
+    }
     fn open_render_document(
         &mut self,
         document: svg_render::Document,
@@ -1655,6 +1689,7 @@ impl App {
             egui::ViewportId::from_hash_of("svg-symbol-gallery-window"),
             egui::ViewportBuilder::default()
                 .with_title("Symbol gallery")
+                .with_always_on_top()
                 .with_inner_size([1040.0, 760.0])
                 .with_min_inner_size([620.0, 440.0]),
             |ui, _| {
@@ -1945,8 +1980,9 @@ impl App {
                         update_bounds |= table_column_combo(ui, "ID", &window.table.headers, &mut window.columns.id);
                         ui.end_row();
                         update_bounds |= table_column_combo(ui, "Name / label", &window.table.headers, &mut window.columns.name);
-                        update_bounds |= table_column_combo(ui, "Class", &window.table.headers, &mut window.columns.class_name);
+                        update_bounds |= table_column_combo(ui, "Label content", &window.table.headers, &mut window.columns.content);
                         ui.end_row();
+                        update_bounds |= table_column_combo(ui, "Class", &window.table.headers, &mut window.columns.class_name);
                         update_bounds |= table_column_combo(ui, "Fill", &window.table.headers, &mut window.columns.fill);
                         update_bounds |= table_column_combo(ui, "Stroke", &window.table.headers, &mut window.columns.stroke);
                         ui.end_row();
@@ -2171,15 +2207,26 @@ impl App {
                             egui::ComboBox::from_label("Category").selected_text(row.category.label()).show_ui(ui, |ui| {
                                 for category in svg_render::Category::ALL { ui.selectable_value(&mut row.category, category, category.label()); }
                             });
+                            ui.checkbox(&mut row.as_trace, "Use this layer/class as tracing image");
+                            if row.as_trace { ui.small("The selected SVG layer/class is rasterized as Wonderdraft's trace overlay."); }
                             if row.category == svg_render::Category::Invisible { ui.small("Invisible elements are not written to the map."); return; }
-                            ui.horizontal(|ui| { ui.label("Name attribute"); if ui.text_edit_singleline(&mut row.name_attribute).changed() { propagated_name=Some((selected,row.name_attribute.clone())); } });
+                            if row.category == svg_render::Category::Label {
+                                ui.label("Label text: SVG <text> content");
+                                ui.checkbox(&mut row.label.match_svg_style, "Match SVG text style");
+                            } else {
+                                ui.horizontal(|ui| { ui.label("Name attribute"); if ui.text_edit_singleline(&mut row.name_attribute).changed() { propagated_name=Some((selected,row.name_attribute.clone())); } });
+                            }
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut row.label.enabled, "Create label");
-                                ui.add_enabled_ui(row.label.enabled, |ui| {
+                                if row.category == svg_render::Category::Label {
+                                    ui.label("Create a label for every text element");
+                                } else {
+                                    ui.checkbox(&mut row.label.enabled, "Create label");
+                                }
+                                ui.add_enabled_ui(row.category == svg_render::Category::Label || row.label.enabled, |ui| {
                                     ui.checkbox(&mut row.label.prepend_class, "Prepend class");
                                 });
                             });
-                            if row.label.enabled {
+                            if row.category == svg_render::Category::Label || row.label.enabled {
                                 ui.indent("label-options", |ui| {
                                     ui.horizontal(|ui| {
                                         ui.label("Font");
@@ -2335,7 +2382,7 @@ impl App {
                                     freshwater_style_controls(ui, row);
                                     ui.small("Freshwater renders after landmass classes. Apply fill uses red; a positive border width uses a red border.");
                                 }
-                                svg_render::Category::Invisible => {}
+                                svg_render::Category::Label | svg_render::Category::Invisible => {}
                             }
                         });
                     }
@@ -2622,6 +2669,9 @@ impl eframe::App for App {
                     if let Err(error) = self.open_svg_renderer(path, &ctx) {
                         self.fail("Could not open SVG renderer", error);
                     }
+                }
+                if ui.button("Inkarnate → SVG…").clicked() {
+                    self.begin_dialog(DialogAction::InkarnateBackup, &ctx);
                 }
                 let render_csv = ui.button("Render from CSV…");
                 if render_csv.clicked() {

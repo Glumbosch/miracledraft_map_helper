@@ -5,6 +5,7 @@ pub mod fonts;
 pub mod gcpf;
 pub mod godot_text;
 pub mod images;
+pub mod inkarnate;
 pub mod pck;
 pub mod settings;
 pub mod svg;

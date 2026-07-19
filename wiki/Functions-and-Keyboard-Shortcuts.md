@@ -25,6 +25,7 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Save map as…** | Rebuilds the map from the current text, embedded images, and binary data, then writes a new `.wonderdraft_map`. |
 | **Export SVG…** | Exports the enabled map layers to SVG using the current embedding settings. |
 | **Import SVG…** | Reads supported SVG elements and their `wd:*` metadata into the currently open map data. Save afterward to create a map file. |
+| **Inkarnate → SVG…** | Converts an Inkarnate v3 JSON backup into a layered SVG without requiring Python. The SVG can then be rendered as a new Wonderdraft map. |
 | **Export map data…** | Writes the currently displayed Godot text to a plain `.txt` file. |
 | **Export all PNGs** | Exports every detected embedded image to a selected directory. |
 | **Settings…** | Opens Wonderdraft integration, asset-folder, core-extraction, and cache settings. |
@@ -48,6 +49,17 @@ For raster classes, **Fill override** has a nested **No fill** checkbox. It
 writes `fill:none`, which is useful for freshwater lines. CSV rows tagged as
 `path`, `polyline`, or `line` remain open; they are not converted into closed
 filled polygons by a CSV fill column.
+
+Set a class or Inkscape layer to the **label** category to create one
+Wonderdraft label for every SVG `<text>` element. Its content is taken from the
+SVG text; font, size, fill color, opacity, and text anchor are matched by
+default. CSV rendering provides a **Label content** column for the same
+category.
+
+**Use this layer/class as tracing image** rasterizes that source selection and
+stores it in Wonderdraft's trace overlay. This is particularly useful for the
+**Preview** layer emitted by Inkarnate conversion. Only the first selected
+tracing row is used.
 
 ## Save and SVG options
 
