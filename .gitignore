@@ -9,3 +9,5 @@ __pycache__/
 Thumbs.db
 *.wonderdraft_map
 tempfiles/*
+testfiles/*/*
+testfiles/*

@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const EXTS: &[&str] = &["png", "webp", "jpg", "jpeg", "svg"];
+const SYMBOL_DATABASE_FORMAT_VERSION: u32 = 2;
 #[derive(Clone, Debug)]
 pub struct Resolver {
     pub custom: Option<PathBuf>,
@@ -150,6 +151,7 @@ impl Resolver {
         let path = symbol_database_path();
         if let Ok(text) = fs::read_to_string(&path)
             && let Ok(database) = serde_json::from_str::<SymbolDatabase>(&text)
+            && database.format_version == SYMBOL_DATABASE_FORMAT_VERSION
         {
             let assets = database
                 .assets
@@ -168,7 +170,7 @@ impl Resolver {
     pub fn rebuild_symbol_database(&self) -> Result<Vec<AssetInfo>> {
         let assets = self.all_assets();
         let database = SymbolDatabase {
-            format_version: 1,
+            format_version: SYMBOL_DATABASE_FORMAT_VERSION,
             assets: assets.clone(),
         };
         let path = symbol_database_path();
@@ -402,6 +404,33 @@ mod tests {
 
         assert!(textures.contains(&"res://sprites/symbols/core/castle".to_owned()));
         assert!(textures.contains(&"user://assets/places/tower".to_owned()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn symbol_database_serializes_source_pixel_dimensions() {
+        let root = env::temp_dir().join(format!(
+            "wonderdraft-symbol-dimensions-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("wide.png");
+        image::RgbaImage::new(37, 19).save(&image_path).unwrap();
+        let resolver = Resolver {
+            custom: Some(root.clone()),
+            default: None,
+            packs: None,
+        };
+        let asset = resolver.asset_info("user://assets/wide").unwrap();
+        let json = serde_json::to_value(SymbolDatabase {
+            format_version: SYMBOL_DATABASE_FORMAT_VERSION,
+            assets: vec![asset],
+        })
+        .unwrap();
+
+        assert_eq!(json["assets"][0]["width"], 37.0);
+        assert_eq!(json["assets"][0]["height"], 19.0);
         let _ = fs::remove_dir_all(root);
     }
 }

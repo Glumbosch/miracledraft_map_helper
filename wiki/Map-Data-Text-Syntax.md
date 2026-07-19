@@ -217,6 +217,8 @@ export/replace workflow; manually editing the packed image bytes is error-prone.
 | `glow_color`, `glow_size` | Optional glow appearance. |
 | `extra_spacing_char` | Per-character spacing adjustment. |
 | `z_index` | Draw order. |
+|`align`| 0: left Align, 1:"Center align",2:"right align" |
+|`curve`|values from -1 to 1 , 0 is normal text,-1 semicircle down, 1 semicircle up|
 
 `theme.label_presets` is separate from `labels`: it defines named preset
 settings such as `City`, `Town`, and `Water`, while each saved label carries its

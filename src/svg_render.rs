@@ -18,6 +18,24 @@ use std::{
 type Matrix = [f64; 6];
 const IDENTITY: Matrix = [1., 0., 0., 1., 0., 0.];
 
+pub const LABEL_FONT_PRESETS: &[&str] = &[
+    "Aladin",
+    "Barlow Condensed",
+    "Bilbo",
+    "Cinzel Decorative",
+    "East Sea Dokdo",
+    "Fredericka the Great",
+    "Gentium Book Basic Bold",
+    "IM FELL DW Pica",
+    "IM FELL English Italic",
+    "Katibeh",
+    "Lancelot",
+    "Marko One",
+    "Merriweather",
+    "Metamorphous",
+    "Uncial Antiqua",
+];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Category {
     Symbol,
@@ -26,19 +44,21 @@ pub enum Category {
     WaterTint,
     Territory,
     Landmass,
+    FillWithLand,
     Freshwater,
     #[default]
     Invisible,
 }
 
 impl Category {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Symbol,
         Self::Path,
         Self::Ground,
         Self::WaterTint,
         Self::Territory,
         Self::Landmass,
+        Self::FillWithLand,
         Self::Freshwater,
         Self::Invisible,
     ];
@@ -50,6 +70,7 @@ impl Category {
             Self::WaterTint => "water_tint",
             Self::Territory => "territory",
             Self::Landmass => "landmass",
+            Self::FillWithLand => "fill with land",
             Self::Freshwater => "freshwater",
             Self::Invisible => "invisible",
         }
@@ -59,11 +80,15 @@ impl Category {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabelSettings {
     pub enabled: bool,
+    #[serde(default)]
+    pub prepend_class: bool,
     pub size: f32,
     pub font: String,
     pub color: [u8; 4],
     pub outline_color: [u8; 4],
     pub outline: f32,
+    #[serde(default)]
+    pub align: i32,
     pub offset_x: f32,
     pub offset_y: f32,
 }
@@ -71,11 +96,13 @@ impl Default for LabelSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            prepend_class: false,
             size: 24.,
-            font: "East Sea Dokdo".into(),
+            font: "Gentium Book Basic Bold".into(),
             color: [0, 0, 0, 255],
             outline_color: [255, 255, 255, 255],
-            outline: 2.,
+            outline: 0.,
+            align: 0,
             offset_x: 0.,
             offset_y: 0.,
         }
@@ -96,6 +123,8 @@ pub struct ClassSettings {
     pub path_style: String,
     pub path_color: [u8; 4],
     pub width: f32,
+    #[serde(default)]
+    pub roughness: f32,
     pub fill_override: Option<[u8; 4]>,
     pub border_override: Option<[u8; 4]>,
     pub border_width_override: Option<f32>,
@@ -114,6 +143,7 @@ impl ClassSettings {
             path_style: "res://textures/paths/path_blended".into(),
             path_color: [0, 0, 0, 255],
             width: 4.,
+            roughness: 0.,
             fill_override: None,
             border_override: None,
             border_width_override: None,
@@ -132,6 +162,7 @@ pub struct Document {
     pub height: u32,
     pub classes: Vec<String>,
     pub layer_fallback: bool,
+    source_svg: String,
     layer_ids: HashMap<String, Vec<String>>,
     instances: Vec<Instance>,
 }
@@ -143,8 +174,327 @@ struct Instance {
     matrix: Matrix,
     points: Vec<(f64, f64)>,
     center: (f64, f64),
+    label_anchor: Option<(f64, f64)>,
     has_fill: bool,
     has_nodes: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableEncoding {
+    Utf8,
+    Windows1252,
+    Latin1,
+    Utf16Le,
+    Utf16Be,
+}
+
+impl TableEncoding {
+    pub const ALL: [Self; 5] = [
+        Self::Utf8,
+        Self::Windows1252,
+        Self::Latin1,
+        Self::Utf16Le,
+        Self::Utf16Be,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Utf8 => "UTF-8",
+            Self::Windows1252 => "Windows-1252",
+            Self::Latin1 => "ISO-8859-1",
+            Self::Utf16Le => "UTF-16 LE",
+            Self::Utf16Be => "UTF-16 BE",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableDelimiter {
+    Auto,
+    Tab,
+    Comma,
+    Semicolon,
+    Pipe,
+}
+
+impl TableDelimiter {
+    pub const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::Tab,
+        Self::Comma,
+        Self::Semicolon,
+        Self::Pipe,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto detect",
+            Self::Tab => "Tab",
+            Self::Comma => "Comma",
+            Self::Semicolon => "Semicolon",
+            Self::Pipe => "Pipe",
+        }
+    }
+    fn character(self) -> Option<char> {
+        match self {
+            Self::Auto => None,
+            Self::Tab => Some('\t'),
+            Self::Comma => Some(','),
+            Self::Semicolon => Some(';'),
+            Self::Pipe => Some('|'),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TableData {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub delimiter: char,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TableColumns {
+    pub tag: Option<usize>,
+    pub id: Option<usize>,
+    pub name: Option<usize>,
+    pub class_name: Option<usize>,
+    pub fill: Option<usize>,
+    pub stroke: Option<usize>,
+    pub stroke_width: Option<usize>,
+    pub coordinates: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TableOptions {
+    pub columns: TableColumns,
+    pub relative_after_first: bool,
+    pub source_x: f64,
+    pub source_y: f64,
+    pub source_width: f64,
+    pub source_height: f64,
+    pub map_width: u32,
+    pub map_height: u32,
+}
+
+pub fn read_table(
+    path: &Path,
+    encoding: TableEncoding,
+    delimiter: TableDelimiter,
+) -> Result<TableData> {
+    let bytes = fs::read(path).map_err(|error| Error::format(error.to_string()))?;
+    let raw = decode_table(&bytes, encoding)?;
+    let first_line = raw
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let delimiter = delimiter
+        .character()
+        .unwrap_or_else(|| detect_delimiter(first_line));
+    let mut records = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| delimited_fields(line, delimiter));
+    let headers = records
+        .next()
+        .ok_or_else(|| Error::format("the table is empty"))?;
+    let rows = records.collect();
+    Ok(TableData {
+        headers,
+        rows,
+        delimiter,
+    })
+}
+
+pub fn auto_table_columns(headers: &[String]) -> TableColumns {
+    let find = |aliases: &[&str]| {
+        headers.iter().position(|header| {
+            let normalized = normalize_header(header);
+            aliases.iter().any(|alias| normalized == *alias)
+        })
+    };
+    TableColumns {
+        tag: find(&["tag", "element", "element_type"]),
+        id: find(&["id", "element_id"]),
+        name: find(&["mapsvg_name", "mapsvgname", "name", "label"]),
+        class_name: find(&["class", "class_name", "classname", "layer"]),
+        fill: find(&["fill", "fill_color", "fillcolor"]),
+        stroke: find(&["stroke", "stroke_color", "strokecolor"]),
+        stroke_width: find(&["stroke_width", "strokewidth", "width"]),
+        coordinates: find(&["coordinates", "coordinate", "coords", "points"]),
+    }
+}
+
+pub fn table_bounds(
+    table: &TableData,
+    columns: &TableColumns,
+    relative_after_first: bool,
+) -> Result<(f64, f64, f64, f64)> {
+    let coordinate_column = columns
+        .coordinates
+        .ok_or_else(|| Error::format("assign a Coordinates column"))?;
+    let tag_column = columns.tag;
+    let mut all = Vec::new();
+    for row in &table.rows {
+        let tag = table_value(row, tag_column).unwrap_or("path");
+        let Some(raw) = row.get(coordinate_column) else {
+            continue;
+        };
+        let parsed = parse_coordinate_pairs(raw)?;
+        all.extend(expand_table_points(tag, &parsed, relative_after_first));
+    }
+    if all.is_empty() {
+        return Err(Error::format("no coordinate pairs were found"));
+    }
+    let min_x = all
+        .iter()
+        .map(|point| point.0)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = all
+        .iter()
+        .map(|point| point.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = all
+        .iter()
+        .map(|point| point.1)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = all
+        .iter()
+        .map(|point| point.1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    Ok((
+        min_x,
+        min_y,
+        (max_x - min_x).max(1.),
+        (max_y - min_y).max(1.),
+    ))
+}
+
+pub fn analyze_table(path: &Path, table: &TableData, options: &TableOptions) -> Result<Document> {
+    let class_column = options
+        .columns
+        .class_name
+        .ok_or_else(|| Error::format("assign a Class column"))?;
+    let coordinate_column = options
+        .columns
+        .coordinates
+        .ok_or_else(|| Error::format("assign a Coordinates column"))?;
+    if options.map_width == 0 || options.map_height == 0 {
+        return Err(Error::format(
+            "map width and height must be greater than zero",
+        ));
+    }
+    if options.source_width <= 0. || options.source_height <= 0. {
+        return Err(Error::format(
+            "source width and height must be greater than zero",
+        ));
+    }
+
+    let transform = |(x, y): (f64, f64)| {
+        (
+            (x - options.source_x) * options.map_width as f64 / options.source_width,
+            (y - options.source_y) * options.map_height as f64 / options.source_height,
+        )
+    };
+    let mut classes = HashSet::new();
+    let mut instances = Vec::new();
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:mapsvg="http://www.garetien.de" width="{}" height="{}" viewBox="0 0 {} {}">"#,
+        options.map_width, options.map_height, options.map_width, options.map_height
+    );
+    for row in &table.rows {
+        let Some(class_value) = row.get(class_column).map(|value| value.trim()) else {
+            continue;
+        };
+        if class_value.is_empty() {
+            continue;
+        }
+        let raw_coordinates = row.get(coordinate_column).map_or("", String::as_str);
+        let parsed = parse_coordinate_pairs(raw_coordinates)?;
+        let tag = table_value(row, options.columns.tag).unwrap_or("path");
+        let points = expand_table_points(tag, &parsed, options.relative_after_first)
+            .into_iter()
+            .map(transform)
+            .collect::<Vec<_>>();
+        if points.is_empty() {
+            continue;
+        }
+        let fill = table_value(row, options.columns.fill).unwrap_or("").trim();
+        let stroke = table_value(row, options.columns.stroke)
+            .unwrap_or("")
+            .trim();
+        let stroke_width = table_value(row, options.columns.stroke_width)
+            .unwrap_or("")
+            .trim();
+        let name = table_value(row, options.columns.name).unwrap_or("").trim();
+        let id = table_value(row, options.columns.id).unwrap_or("").trim();
+        let has_fill = !fill.is_empty() && !fill.eq_ignore_ascii_case("none");
+        let has_nodes = matches!(
+            tag.to_ascii_lowercase().as_str(),
+            "path" | "polyline" | "polygon" | "line"
+        );
+        let center = if points.len() == 1 {
+            points[0]
+        } else {
+            bounds_center(&points)
+        };
+        let mut attrs = vec![("class".into(), class_value.into())];
+        if !id.is_empty() {
+            attrs.push(("id".into(), id.into()));
+        }
+        if !name.is_empty() {
+            attrs.push(("mapsvg:name".into(), name.into()));
+        }
+        if !fill.is_empty() {
+            attrs.push(("fill".into(), fill.into()));
+        }
+        if !stroke.is_empty() {
+            attrs.push(("stroke".into(), stroke.into()));
+        }
+        if !stroke_width.is_empty() {
+            attrs.push(("stroke-width".into(), stroke_width.into()));
+        }
+        for class_name in class_value.split_whitespace() {
+            classes.insert(class_name.to_owned());
+            instances.push(Instance {
+                class_name: class_name.to_owned(),
+                attrs: attrs.clone(),
+                matrix: IDENTITY,
+                points: points.clone(),
+                center,
+                label_anchor: None,
+                has_fill,
+                has_nodes,
+            });
+        }
+        append_table_svg_element(
+            &mut svg,
+            class_value,
+            id,
+            name,
+            fill,
+            stroke,
+            stroke_width,
+            &points,
+            has_fill,
+        );
+    }
+    svg.push_str("</svg>");
+    let mut classes = classes.into_iter().collect::<Vec<_>>();
+    classes.sort_by_key(|value| value.to_lowercase());
+    if classes.is_empty() {
+        return Err(Error::format(
+            "no rows with a class and coordinates were found",
+        ));
+    }
+    Ok(Document {
+        source: path.to_owned(),
+        width: options.map_width,
+        height: options.map_height,
+        classes,
+        layer_fallback: false,
+        source_svg: svg,
+        layer_ids: HashMap::new(),
+        instances,
+    })
 }
 
 #[derive(Clone)]
@@ -317,6 +667,11 @@ pub fn analyze(path: &Path) -> Result<Document> {
             } else {
                 bounds_center(&points)
             };
+            // MapSVG town labels are positioned at this local point by the
+            // reference Python script. Applying the complete accumulated
+            // matrix also accounts for transformed parent groups and nested
+            // SVG viewports.
+            let label_anchor = (tag == "use").then(|| viewport_point(apply(matrix, 18., 13.)));
             let has_fill =
                 presentation(&attrs, "fill").is_some_and(|fill| !fill.eq_ignore_ascii_case("none"));
             instances.push(Instance {
@@ -325,6 +680,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
                 matrix,
                 points,
                 center,
+                label_anchor,
                 has_fill,
                 has_nodes: matches!(tag.as_str(), "path" | "polyline" | "polygon" | "line"),
             });
@@ -342,6 +698,7 @@ pub fn analyze(path: &Path) -> Result<Document> {
         height,
         classes,
         layer_fallback,
+        source_svg: raw,
         layer_ids,
         instances,
     })
@@ -405,14 +762,14 @@ pub fn render(
     destination: &Path,
     compressed: bool,
 ) -> Result<RenderSummary> {
-    let mut mask = RgbaImage::new(document.width, document.height);
+    let mut mask = initial_mask(document.width, document.height, settings);
     let mut ground = RgbaImage::new(document.width, document.height);
     let mut water = RgbaImage::new(document.width, document.height);
     let mut symbols = Vec::new();
     let mut paths = Vec::new();
     let mut territories = Vec::new();
     let mut labels = Vec::new();
-    let source = fs::read_to_string(&document.source).map_err(|e| Error::format(e.to_string()))?;
+    let source = document.source_svg.clone();
     let temp = crate::images::temp_cache_dir(&std::env::temp_dir())?;
     // Land first, freshwater second, regardless of class ordering.
     for category in [
@@ -451,7 +808,9 @@ pub fn render(
             .unwrap_or_default();
         for instance in instances {
             let first = instance.points.first().copied().unwrap_or(instance.center);
-            let label_position = if instance.has_fill {
+            let label_position = if let Some(anchor) = instance.label_anchor {
+                anchor
+            } else if instance.has_fill {
                 geometric_center(&instance.points)
             } else {
                 first
@@ -474,7 +833,7 @@ pub fn render(
             }
             if row.category != Category::Invisible && row.label.enabled {
                 if let Some(text) = instance_name(instance, &row.name_attribute) {
-                    labels.push(label_record(row, text, label_position));
+                    labels.push(label_record(row, label_text(row, &text), label_position));
                 }
             }
         }
@@ -511,6 +870,17 @@ pub fn render(
     variant::save_map(&root, destination, 4096, compressed)?;
     let _ = fs::remove_dir_all(temp);
     Ok(summary)
+}
+
+fn initial_mask(width: u32, height: u32, settings: &[ClassSettings]) -> RgbaImage {
+    if settings
+        .iter()
+        .any(|row| row.category == Category::FillWithLand)
+    {
+        RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]))
+    } else {
+        RgbaImage::new(width, height)
+    }
 }
 
 fn base_map(width: u32, height: u32) -> Value {
@@ -751,10 +1121,18 @@ fn path_record(row: &ClassSettings, instance: &Instance) -> Value {
     r.set("width", Value::Real(row.width as f64));
     r.set("color", color(row.path_color));
     r.set("style", Value::String(row.path_style.clone()));
-    r.set("roughness", Value::Real(0.33));
+    r.set("roughness", Value::Real(row.roughness as f64));
     r.set("straight", Value::Bool(false));
     r.set("z_index", Value::Int(0));
     r
+}
+
+fn label_text(row: &ClassSettings, attribute_value: &str) -> String {
+    if row.label.prepend_class {
+        format!("{}: {attribute_value}", row.class_name)
+    } else {
+        attribute_value.to_owned()
+    }
 }
 fn territory_record(row: &ClassSettings, instance: &Instance) -> Value {
     let mut r = Value::dict();
@@ -791,7 +1169,7 @@ fn label_record(row: &ClassSettings, text: String, position: (f64, f64)) -> Valu
     r.set("color", color(s.color));
     r.set("outline_color", color(s.outline_color));
     r.set("outline_size", Value::Real(s.outline as f64));
-    r.set("align", Value::Int(1));
+    r.set("align", Value::Int(s.align.clamp(0, 2) as i64));
     r.set("curve", Value::Real(0.));
     r.set("rotation", Value::Real(0.));
     r.set("extra_spacing_char", Value::Int(0));
@@ -834,8 +1212,9 @@ fn raster_css(document: &Document, row: &ClassSettings) -> String {
         _ => {}
     }
     // The isolation rule above makes the selected layer visible. Re-apply
-    // authored invisibility afterwards so hidden elements are never painted.
-    style.push_str(" [display=\"none\"],[display=\"none\"] *,[visibility=\"hidden\"],[visibility=\"hidden\"] *,[style*=\"display:none\"],[style*=\"display:none\"] * ,[style*=\"display: none\"],[style*=\"display: none\"] * ,[style*=\"visibility:hidden\"],[style*=\"visibility:hidden\"] * ,[style*=\"visibility: hidden\"],[style*=\"visibility: hidden\"] *{display:none!important;visibility:hidden!important}");
+    // authored display:none afterwards. Visibility:hidden is intentionally
+    // not treated as a filter: MapSVG uses it for level-of-detail metadata.
+    style.push_str(" [display=\"none\"],[display=\"none\"] *,[style*=\"display:none\"],[style*=\"display:none\"] * ,[style*=\"display: none\"],[style*=\"display: none\"] *{display:none!important}");
     style
 }
 fn render_external(source: &Path, output: &Path, width: u32, height: u32) -> Result<()> {
@@ -958,11 +1337,9 @@ fn presentation<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str
         .or_else(|| attribute(attrs, name))
 }
 fn is_invisible(attrs: &[(String, String)]) -> bool {
-    ["display", "visibility"].into_iter().any(|name| {
-        presentation(attrs, name).is_some_and(|value| {
-            value.trim().eq_ignore_ascii_case("none") || value.trim().eq_ignore_ascii_case("hidden")
-        })
-    })
+    presentation(attrs, "display")
+        .and_then(|value| value.split_whitespace().next())
+        .is_some_and(|value| value.eq_ignore_ascii_case("none"))
 }
 fn is_drawable(tag: &str) -> bool {
     matches!(
@@ -1247,6 +1624,230 @@ fn hex(v: [u8; 4]) -> String {
 fn csv_escape(v: &str) -> String {
     format!("\"{}\"", v.replace('"', "\"\""))
 }
+fn decode_table(bytes: &[u8], encoding: TableEncoding) -> Result<String> {
+    match encoding {
+        TableEncoding::Utf8 => String::from_utf8(
+            bytes
+                .strip_prefix(&[0xef, 0xbb, 0xbf])
+                .unwrap_or(bytes)
+                .to_vec(),
+        )
+        .map_err(|error| Error::format(format!("invalid UTF-8: {error}"))),
+        TableEncoding::Latin1 => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        TableEncoding::Windows1252 => Ok(bytes.iter().map(|byte| windows_1252(*byte)).collect()),
+        TableEncoding::Utf16Le | TableEncoding::Utf16Be => {
+            let bytes = match encoding {
+                TableEncoding::Utf16Le => bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes),
+                TableEncoding::Utf16Be => bytes.strip_prefix(&[0xfe, 0xff]).unwrap_or(bytes),
+                _ => bytes,
+            };
+            if bytes.len() % 2 != 0 {
+                return Err(Error::format("UTF-16 input has an odd byte count"));
+            }
+            let words = bytes.chunks_exact(2).map(|pair| match encoding {
+                TableEncoding::Utf16Le => u16::from_le_bytes([pair[0], pair[1]]),
+                TableEncoding::Utf16Be => u16::from_be_bytes([pair[0], pair[1]]),
+                _ => unreachable!(),
+            });
+            String::from_utf16(&words.collect::<Vec<_>>())
+                .map_err(|error| Error::format(format!("invalid UTF-16: {error}")))
+        }
+    }
+}
+fn windows_1252(byte: u8) -> char {
+    const SPECIAL: [char; 32] = [
+        '\u{20ac}', '\u{0081}', '\u{201a}', '\u{0192}', '\u{201e}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{02c6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008d}',
+        '\u{017d}', '\u{008f}', '\u{0090}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}',
+        '\u{2022}', '\u{2013}', '\u{2014}', '\u{02dc}', '\u{2122}', '\u{0161}', '\u{203a}',
+        '\u{0153}', '\u{009d}', '\u{017e}', '\u{0178}',
+    ];
+    if (0x80..=0x9f).contains(&byte) {
+        SPECIAL[(byte - 0x80) as usize]
+    } else {
+        char::from(byte)
+    }
+}
+fn detect_delimiter(line: &str) -> char {
+    ['\t', ',', ';', '|']
+        .into_iter()
+        .max_by_key(|delimiter| delimiter_count(line, *delimiter))
+        .unwrap_or('\t')
+}
+fn delimiter_count(line: &str, delimiter: char) -> usize {
+    let mut quoted = false;
+    let mut count = 0;
+    for character in line.chars() {
+        if character == '"' {
+            quoted = !quoted;
+        } else if character == delimiter && !quoted {
+            count += 1;
+        }
+    }
+    count
+}
+fn delimited_fields(line: &str, delimiter: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            value if value == delimiter && !quoted => out.push(std::mem::take(&mut current)),
+            _ => current.push(character),
+        }
+    }
+    out.push(current);
+    out
+}
+fn normalize_header(header: &str) -> String {
+    header
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_owned()
+}
+fn table_value(row: &[String], column: Option<usize>) -> Option<&str> {
+    column.and_then(|index| row.get(index)).map(String::as_str)
+}
+fn parse_coordinate_pairs(raw: &str) -> Result<Vec<(f64, f64)>> {
+    // Coordinate cells commonly arrive as one tuple for point features, or
+    // as a comma-separated sequence of tuples for paths. Prefer the tuple
+    // boundaries so numbers in any surrounding text cannot become points.
+    let mut tuples = Vec::new();
+    let mut tuple_start = None;
+    for (index, character) in raw.char_indices() {
+        match character {
+            '(' => tuple_start = Some(index + character.len_utf8()),
+            ')' => {
+                if let Some(start) = tuple_start.take() {
+                    let values = parse_coordinate_numbers(&raw[start..index])?;
+                    if values.len() != 2 {
+                        return Err(Error::format(
+                            "coordinate tuples must contain exactly two numbers",
+                        ));
+                    }
+                    tuples.push((values[0], values[1]));
+                }
+            }
+            _ => {}
+        }
+    }
+    if tuple_start.is_some() {
+        return Err(Error::format(
+            "coordinate tuple is missing a closing parenthesis",
+        ));
+    }
+    if !tuples.is_empty() {
+        return Ok(tuples);
+    }
+
+    let numbers = parse_coordinate_numbers(raw)?;
+    if numbers.len() % 2 != 0 {
+        return Err(Error::format("coordinates contain an unmatched number"));
+    }
+    Ok(numbers
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect())
+}
+fn parse_coordinate_numbers(raw: &str) -> Result<Vec<f64>> {
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+    for character in raw.chars().chain(std::iter::once(' ')) {
+        if character.is_ascii_digit() || matches!(character, '-' | '+' | '.' | 'e' | 'E') {
+            current.push(character);
+        } else if !current.is_empty() {
+            numbers.push(
+                current
+                    .parse::<f64>()
+                    .map_err(|_| Error::format(format!("invalid coordinate number: {current}")))?,
+            );
+            current.clear();
+        }
+    }
+    Ok(numbers)
+}
+fn expand_table_points(
+    tag: &str,
+    coordinates: &[(f64, f64)],
+    relative_after_first: bool,
+) -> Vec<(f64, f64)> {
+    let path_like = matches!(
+        tag.trim().to_ascii_lowercase().as_str(),
+        "path" | "polyline" | "polygon" | "line"
+    );
+    if relative_after_first && path_like && coordinates.len() > 1 {
+        let origin = coordinates[0];
+        coordinates[1..]
+            .iter()
+            .map(|point| (origin.0 + point.0, origin.1 + point.1))
+            .collect()
+    } else {
+        coordinates.to_vec()
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn append_table_svg_element(
+    svg: &mut String,
+    class_name: &str,
+    id: &str,
+    name: &str,
+    fill: &str,
+    stroke: &str,
+    stroke_width: &str,
+    points: &[(f64, f64)],
+    has_fill: bool,
+) {
+    let attributes = format!(
+        r#" class="{}" id="{}" mapsvg:name="{}" fill="{}" stroke="{}" stroke-width="{}""#,
+        xml_escape(class_name),
+        xml_escape(id),
+        xml_escape(name),
+        xml_escape(if fill.is_empty() { "none" } else { fill }),
+        xml_escape(if stroke.is_empty() { "none" } else { stroke }),
+        xml_escape(if stroke_width.is_empty() {
+            "0"
+        } else {
+            stroke_width
+        }),
+    );
+    if points.len() == 1 {
+        svg.push_str(&format!(
+            r#"<circle{attributes} cx="{}" cy="{}" r="0.5"/>"#,
+            points[0].0, points[0].1
+        ));
+        return;
+    }
+    let points = points
+        .iter()
+        .map(|(x, y)| format!("{x},{y}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tag = if has_fill { "polygon" } else { "polyline" };
+    svg.push_str(&format!(r#"<{tag}{attributes} points="{points}"/>"#));
+}
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
 fn csv_fields(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -1359,7 +1960,125 @@ mod tests {
         let _ = fs::remove_file(p);
     }
     #[test]
-    fn invisible_svg_elements_are_not_routed_or_rasterized() {
+    fn use_label_anchor_matches_python_local_offset_through_parent_matrix() {
+        let p = std::env::temp_dir().join("svg-render-use-label-anchor.svg");
+        fs::write(
+            &p,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="300" height="300"><defs><symbol id="town"><rect x="0" y="0" width="15" height="15"/></symbol></defs><g transform="matrix(2,0,0,2,10,20)"><use class="places" name="Town" xlink:href="#town" transform="matrix(3,0,0,4,5,6)"/></g></svg>"##,
+        )
+        .unwrap();
+        let document = analyze(&p).unwrap();
+        let place = document
+            .instances
+            .iter()
+            .find(|instance| instance.class_name == "places")
+            .unwrap();
+        // Python writes child-local (18, 13); the parent then transforms that
+        // to (128, 136) in the root viewport.
+        assert_eq!(place.label_anchor, Some((128., 136.)));
+        let _ = fs::remove_file(p);
+    }
+    #[test]
+    fn labels_can_prepend_class_and_paths_default_to_zero_roughness() {
+        let mut row = ClassSettings::new("town".into(), "name");
+        assert_eq!(row.label.font, "Gentium Book Basic Bold");
+        assert_eq!(row.label.outline, 0.);
+        assert_eq!(row.label.align, 0);
+        assert!(LABEL_FONT_PRESETS.contains(&"Aladin"));
+        assert!(LABEL_FONT_PRESETS.contains(&"Uncial Antiqua"));
+        assert_eq!(row.roughness, 0.);
+        assert_eq!(label_text(&row, "Oakrest"), "Oakrest");
+        row.label.prepend_class = true;
+        assert_eq!(label_text(&row, "Oakrest"), "town: Oakrest");
+        let record = label_record(&row, "Oakrest".into(), (0., 0.));
+        assert_eq!(record.get("align").and_then(Value::as_f64), Some(0.));
+    }
+    #[test]
+    fn fill_with_land_category_initializes_the_whole_mask() {
+        let mut row = ClassSettings::new("background".into(), "name");
+        row.category = Category::FillWithLand;
+        let mask = initial_mask(3, 2, &[row]);
+        assert!(
+            mask.pixels()
+                .all(|pixel| *pixel == image::Rgba([0, 0, 0, 255]))
+        );
+
+        let empty_mask = initial_mask(2, 1, &[]);
+        assert!(empty_mask.pixels().all(|pixel| pixel.0 == [0, 0, 0, 0]));
+    }
+    #[test]
+    fn tabular_import_maps_headers_relative_points_and_encoding() {
+        let path = std::env::temp_dir().join("svg-render-table.tsv");
+        fs::write(
+            &path,
+            "tag\tid\tmapsvg_name\tclass\tfill\tstroke\tstroke_width\tcoordinates\npath\tp1\tWäldchen\tWald\t#008000\t\t\t[(100, 200), (10, -20), (30, 40)]\n",
+        )
+        .unwrap();
+        let table = read_table(&path, TableEncoding::Utf8, TableDelimiter::Auto).unwrap();
+        assert_eq!(table.delimiter, '\t');
+        let columns = auto_table_columns(&table.headers);
+        assert_eq!(columns.name, Some(2));
+        assert_eq!(
+            table_bounds(&table, &columns, true).unwrap(),
+            (110., 180., 20., 60.)
+        );
+        let document = analyze_table(
+            &path,
+            &table,
+            &TableOptions {
+                columns,
+                relative_after_first: true,
+                source_x: 100.,
+                source_y: 100.,
+                source_width: 100.,
+                source_height: 200.,
+                map_width: 1000,
+                map_height: 1000,
+            },
+        )
+        .unwrap();
+        assert_eq!(document.classes, vec!["Wald"]);
+        assert_eq!(
+            document.instances[0].points,
+            vec![(100., 400.), (300., 700.)]
+        );
+        assert!(document.source_svg.contains("Wäldchen"));
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn tabular_import_accepts_single_coordinate_tuples_for_point_features() {
+        let path = std::env::temp_dir().join("svg-render-single-coordinate-tuples.tsv");
+        fs::write(
+            &path,
+            "tag\tid\tname\tclass\tcoordinates\nuse\tuse5328\tStoerrebrandt-Kolleg\tAkademie\t(2488.2, 792.0)\nuse\tuse5603\tSchwert und Stab\tAkademie\t(2623.9, 1242.1)\npath\tfoob\thurteweg\tWeg\t(5579.1, 2485.2),(5579.1, 2485.2)\nuse\tuse6765\tGarten des Ruhms Frans\tAkademie\t(1343.2, 1542.4)\n",
+        )
+        .unwrap();
+        let table = read_table(&path, TableEncoding::Utf8, TableDelimiter::Auto).unwrap();
+        let columns = auto_table_columns(&table.headers);
+        assert_eq!(table.delimiter, '\t');
+        assert_eq!(table_bounds(&table, &columns, false).unwrap().0, 1343.2);
+        let document = analyze_table(
+            &path,
+            &table,
+            &TableOptions {
+                columns,
+                relative_after_first: false,
+                source_x: 0.,
+                source_y: 0.,
+                source_width: 6000.,
+                source_height: 3000.,
+                map_width: 6000,
+                map_height: 3000,
+            },
+        )
+        .unwrap();
+        assert_eq!(document.instances.len(), 4);
+        assert_eq!(document.instances[0].points, vec![(2488.2, 792.0)]);
+        assert_eq!(document.instances[2].points.len(), 2);
+        let _ = fs::remove_file(path);
+    }
+    #[test]
+    fn display_none_svg_elements_are_not_routed_or_rasterized() {
         let p = std::env::temp_dir().join("svg-render-invisible-elements.svg");
         fs::write(
             &p,
@@ -1373,12 +2092,13 @@ mod tests {
                 .iter()
                 .filter(|item| item.class_name == "places")
                 .count(),
-            1
+            2
         );
         let mut row = ClassSettings::new("places".into(), "map:svgname");
         row.category = Category::Ground;
         let css = raster_css(&document, &row);
         assert!(css.contains("display:none!important"));
+        assert!(!css.contains("[visibility=\"hidden\"]"));
         let _ = fs::remove_file(p);
     }
     #[test]
@@ -1549,6 +2269,7 @@ mod tests {
             matrix: IDENTITY,
             points: vec![],
             center: (10., 20.),
+            label_anchor: None,
             has_fill: false,
             has_nodes: false,
         };
