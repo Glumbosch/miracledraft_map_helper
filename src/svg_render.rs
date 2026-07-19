@@ -236,9 +236,12 @@ impl Document {
         // Keep rasterized categories (ground, water, landmass, freshwater) in
         // the same source viewport as vector records. The original SVG is a
         // nested document so its authored coordinate system remains intact.
+        // XML declarations are only legal at the start of a complete document;
+        // leaving one inside this wrapper makes browser renderers rasterize an
+        // XML error page instead of the selected paint layer.
         document.source_svg = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="{x} {y} {viewport_width} {viewport_height}" overflow="hidden">{}</svg>"#,
-            self.source_svg
+            without_xml_declaration(&self.source_svg)
         );
         document.classes.retain(|class| classes.contains(class));
         document.instances = self
@@ -273,6 +276,17 @@ impl Document {
             .collect();
         document
     }
+}
+
+fn without_xml_declaration(source: &str) -> &str {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let trimmed = source.trim_start();
+    if trimmed.starts_with("<?xml")
+        && let Some(end) = trimmed.find("?>")
+    {
+        return &trimmed[end + 2..];
+    }
+    source
 }
 
 #[derive(Clone, Debug)]
@@ -871,6 +885,16 @@ pub fn render(
     destination: &Path,
     compressed: bool,
 ) -> Result<RenderSummary> {
+    let (root, summary) = render_value(document, settings, resolver)?;
+    variant::save_map(&root, destination, 4096, compressed)?;
+    Ok(summary)
+}
+
+pub fn render_value(
+    document: &Document,
+    settings: &[ClassSettings],
+    resolver: &Resolver,
+) -> Result<(Value, RenderSummary)> {
     let mut mask = initial_mask(document.width, document.height, settings);
     let mut ground = RgbaImage::new(document.width, document.height);
     let mut water = RgbaImage::new(document.width, document.height);
@@ -976,9 +1000,41 @@ pub fn render(
             .and_then(Value::as_array)
             .map_or(0, |v| v.len()),
     };
-    variant::save_map(&root, destination, 4096, compressed)?;
     let _ = fs::remove_dir_all(temp);
-    Ok(summary)
+    Ok((root, summary))
+}
+
+/// Provides a useful first-pass conversion for common Inkscape map layers.
+/// The full **Render SVG…** workflow remains available for custom mappings.
+pub fn quick_import_settings(document: &Document) -> Vec<ClassSettings> {
+    let mut settings = default_settings(document);
+    for row in &mut settings {
+        match row.class_name.to_ascii_lowercase().as_str() {
+            "ground_painting" => row.category = Category::Ground,
+            "land" => row.category = Category::Landmass,
+            "water_paiting" | "water_painting" => row.category = Category::WaterTint,
+            "rivvers" | "rivers" => {
+                row.category = Category::Freshwater;
+                row.fill_override = Some([255, 0, 0, 255]);
+            }
+            "streets" | "roads" => {
+                row.category = Category::Path;
+                row.path_color = [174, 135, 135, 255];
+                row.roughness = 0.33;
+            }
+            "places" => {
+                row.category = Category::Symbol;
+                row.symbol = "res://sprites/symbols/dead_trees_paintable/deadtree_01_flat".into();
+                row.tint = [235, 160, 0, 255];
+                row.label.enabled = true;
+                row.label.font = "East Sea Dokdo".into();
+                row.label.outline = 2.0;
+                row.label.align = 1;
+            }
+            _ => {}
+        }
+    }
+    settings
 }
 
 fn initial_mask(width: u32, height: u32, settings: &[ClassSettings]) -> RgbaImage {
@@ -1313,11 +1369,12 @@ fn raster_css(document: &Document, row: &ClassSettings) -> String {
     match row.category {
         Category::Landmass => style.push_str(&format!(" {descendants}{{fill:#000!important;stroke:#000!important;stroke-width:{}px!important}}", row.width)),
         Category::Freshwater => {
-            style.push_str(&format!(" {target}:not([fill=\"none\"]):not([style*=\"fill:none\"]), {target} *:not([fill=\"none\"]):not([style*=\"fill:none\"]){{fill:#ff0000!important}} {target}:not([stroke=\"none\"]):not([style*=\"stroke:none\"]), {target} *:not([stroke=\"none\"]):not([style*=\"stroke:none\"]){{stroke:#ff0000!important}}"));
             if row.no_fill_override { style.push_str(&format!(" {descendants}{{fill:none!important}}")); }
             else if let Some(value) = row.fill_override { style.push_str(&format!(" {descendants}{{fill:{}!important}}", hex(value))); }
-            if let Some(value) = row.border_override { style.push_str(&format!(" {descendants}{{stroke:{}!important}}", hex(value))); }
-            if let Some(value) = row.border_width_override { style.push_str(&format!(" {descendants}{{stroke-width:{value}px!important}}")); }
+            if let Some(width) = row.border_width_override.filter(|width| *width > 0.0) {
+                let color = row.border_override.unwrap_or([255, 0, 0, 255]);
+                style.push_str(&format!(" {descendants}{{stroke:{}!important;stroke-width:{width}px!important}}", hex(color)));
+            }
         }
         Category::Ground | Category::WaterTint => {
             if row.no_fill_override { style.push_str(&format!(" {descendants}{{fill:none!important}}")); }
@@ -1708,6 +1765,7 @@ fn instance_name(instance: &Instance, attribute_name: &str) -> Option<String> {
                 .and_then(|local| attribute(&instance.attrs, local))
         })
         .or_else(|| attribute(&instance.attrs, "name"))
+        .or_else(|| attribute(&instance.attrs, "label"))
         .map(str::to_owned)
 }
 fn vec2(x: f64, y: f64) -> Value {
@@ -2203,6 +2261,75 @@ mod tests {
         let _ = fs::remove_file(path);
     }
     #[test]
+    fn fresh_water_csv_export_writes_visible_pixels_to_the_mask() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles");
+        let source = fixtures.join("fresh_water_csv_import_test.csv");
+        let table = read_table(&source, TableEncoding::Utf8, TableDelimiter::Auto).unwrap();
+        let columns = auto_table_columns(&table.headers);
+        let (source_x, source_y, source_width, source_height) =
+            table_bounds(&table, &columns, false).unwrap();
+        let document = analyze_table(
+            &source,
+            &table,
+            &TableOptions {
+                columns,
+                relative_after_first: false,
+                source_x,
+                source_y,
+                source_width,
+                source_height,
+                map_width: 512,
+                map_height: 256,
+            },
+        )
+        .unwrap();
+        let selected_classes = document.classes.iter().cloned().collect::<HashSet<_>>();
+        let document = document.cropped_for_render(
+            &selected_classes,
+            document.data_bounds().unwrap(),
+            512,
+            256,
+        );
+        let mut settings = default_settings(&document);
+        let freshwater = settings
+            .iter_mut()
+            .find(|row| row.class_name == "Bach")
+            .unwrap();
+        freshwater.category = Category::Freshwater;
+        freshwater.border_override = Some([255, 0, 0, 255]);
+        freshwater.border_width_override = Some(1.0);
+
+        let output_dir = std::env::temp_dir().join(format!(
+            "fresh-water-csv-export-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&output_dir).unwrap();
+        let map_path = output_dir.join("fresh-water.wonderdraft_map");
+        render(
+            &document,
+            &settings,
+            &Resolver::new(&Settings::default()),
+            &map_path,
+            false,
+        )
+        .unwrap();
+
+        let raw_path = output_dir.join("fresh-water.variant");
+        crate::gcpf::decompress_file(&map_path, &raw_path, |_, _| {}).unwrap();
+        let exported = variant::decode_file(&raw_path).unwrap();
+        let mask = crate::value::image_info(exported.get("mask").unwrap()).unwrap();
+        let pixels = mask
+            .pixels
+            .read_slice(0, mask.pixels.len() as usize)
+            .unwrap();
+        let has_visible_pixel = pixels.chunks_exact(4).any(|pixel| pixel[3] != 0);
+        let _ = fs::remove_dir_all(output_dir);
+        assert!(
+            has_visible_pixel,
+            "the exported freshwater mask contains only transparent pixels"
+        );
+    }
+    #[test]
     fn display_none_svg_elements_are_not_routed_or_rasterized() {
         let p = std::env::temp_dir().join("svg-render-invisible-elements.svg");
         fs::write(
@@ -2327,6 +2454,106 @@ mod tests {
                 "{filename} is empty"
             );
         }
+    }
+
+    #[test]
+    fn layermap_json_settings_render_a_valid_mask_image() {
+        #[derive(serde::Deserialize)]
+        struct SavedSettings {
+            rows: Vec<ClassSettings>,
+            render_settings: TestRenderSettings,
+        }
+        #[derive(serde::Deserialize)]
+        struct TestRenderSettings {
+            map_width: u32,
+            map_height: u32,
+            selected_layers: Vec<bool>,
+            source_x: f64,
+            source_y: f64,
+            source_width: f64,
+            source_height: f64,
+        }
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles");
+        let document = analyze(&fixtures.join("layermap.svg")).unwrap();
+        let saved: SavedSettings = serde_json::from_str(
+            &fs::read_to_string(
+                fixtures.join("testfile_for_render_svg/layermap_render_settings.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let selected_classes = saved
+            .rows
+            .iter()
+            .zip(&saved.render_settings.selected_layers)
+            .filter(|(_, selected)| **selected)
+            .map(|(row, _)| row.class_name.clone())
+            .collect::<HashSet<_>>();
+        let document = document.cropped_for_render(
+            &selected_classes,
+            (
+                saved.render_settings.source_x,
+                saved.render_settings.source_y,
+                saved.render_settings.source_width,
+                saved.render_settings.source_height,
+            ),
+            saved.render_settings.map_width,
+            saved.render_settings.map_height,
+        );
+        assert!(
+            !document.source_svg.contains("<?xml"),
+            "cropped SVG must not embed an XML declaration"
+        );
+        let settings = saved
+            .rows
+            .into_iter()
+            .zip(saved.render_settings.selected_layers)
+            .filter_map(|(row, selected)| selected.then_some(row))
+            .collect::<Vec<_>>();
+        let output_dir = std::env::temp_dir().join(format!(
+            "wonderdraft-layermap-render-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).unwrap();
+        let map = output_dir.join("layermap.wonderdraft_map");
+        let raw = output_dir.join("layermap.variant");
+
+        render(
+            &document,
+            &settings,
+            &Resolver::new(&Settings::default()),
+            &map,
+            true,
+        )
+        .unwrap();
+        crate::gcpf::decompress_file(&map, &raw, |_, _| {}).unwrap();
+        let root = crate::variant::decode_file(&raw).unwrap();
+        let mask = root.get("mask").and_then(crate::value::image_info).unwrap();
+        assert_eq!(
+            (mask.width, mask.height, mask.format.as_str()),
+            (1000, 1000, "RGBA8")
+        );
+        assert_eq!(mask.pixels.len(), 4_000_000);
+        let pixels = mask
+            .pixels
+            .read_slice(0, mask.pixels.len() as usize)
+            .unwrap();
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80 && pixel[3] > 0),
+            "rendered mask contains no red land/freshwater pixels"
+        );
+        assert!(
+            !pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [255, 221, 221, 255]),
+            "rendered mask contains Chrome's pink XML error page"
+        );
+
+        let _ = fs::remove_dir_all(output_dir);
     }
     #[test]
     fn fullmap_attempt2_routes_transformed_nested_svg_symbols() {

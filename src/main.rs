@@ -1335,9 +1335,21 @@ impl App {
         Ok(())
     }
     fn import_svg_from(&mut self, path: &Path) -> Result<()> {
-        let mut root = self.parse()?;
-        let s = svg::import(&mut root, path, &Resolver::new(&self.settings))?;
-        self.text = godot_text::format(&root);
+        if self.text.trim().is_empty()
+            && let Some((prepared, s)) = quick_import_svg(path, &Resolver::new(&self.settings))?
+        {
+            self.images = prepared.images;
+            self.binary_blobs = prepared.binary_blobs;
+            self.text = godot_text::format(&prepared.editable);
+            self.status = format!(
+                "Imported SVG: {} labels, {} symbols, {} paths, {} territories",
+                s.labels, s.symbols, s.paths, s.territories
+            );
+            dialog("SVG imported", &self.status, false);
+            return Ok(());
+        }
+        let (text, s) = import_svg_text(&self.text, path, &Resolver::new(&self.settings))?;
+        self.text = text;
         self.status = format!(
             "Imported SVG: {} labels, {} symbols, {} paths, {} territories",
             s.labels, s.symbols, s.paths, s.territories
@@ -2320,10 +2332,8 @@ impl App {
                                 svg_render::Category::Landmass => { ui.add(egui::Slider::new(&mut row.width,0.0..=100.).text("Black mask border width")); ui.small("Rendered black onto mask.png."); }
                                 svg_render::Category::FillWithLand => { ui.small("Fills the complete map mask with land. The selected class or layer geometry is ignored."); }
                                 svg_render::Category::Freshwater => {
-                                    optional_fill_control(ui, &mut row.fill_override, &mut row.no_fill_override);
-                                    optional_color_control(ui,"Border override",&mut row.border_override);
-                                    optional_width_control(ui,"Border width override",&mut row.border_width_override);
-                                    ui.small("Without overrides, existing fill/stroke colors become red; explicit ‘none’ and opacity are preserved. Rendered after all landmass classes.");
+                                    freshwater_style_controls(ui, row);
+                                    ui.small("Freshwater renders after landmass classes. Apply fill uses red; a positive border width uses a red border.");
                                 }
                                 svg_render::Category::Invisible => {}
                             }
@@ -3134,6 +3144,40 @@ fn map_number(value: Option<&Value>, default: f64) -> f64 {
     value.and_then(Value::as_f64).unwrap_or(default)
 }
 
+fn import_svg_text(
+    existing_text: &str,
+    source: &Path,
+    resolver: &Resolver,
+) -> Result<(String, svg::Summary)> {
+    let mut root = if existing_text.trim().is_empty() {
+        Value::dict()
+    } else {
+        let root = godot_text::parse(existing_text)?;
+        if !matches!(root, Value::Dictionary(_)) {
+            return Err(Error::format("root value must be a Dictionary"));
+        }
+        root
+    };
+    let summary = svg::import(&mut root, source, resolver)?;
+    Ok((godot_text::format(&root), summary))
+}
+
+fn quick_import_svg(
+    source: &Path,
+    resolver: &Resolver,
+) -> Result<Option<(images::PreparedTree, svg_render::RenderSummary)>> {
+    let document = svg_render::analyze(source)?;
+    let settings = svg_render::quick_import_settings(&document);
+    if settings
+        .iter()
+        .all(|row| row.category == svg_render::Category::Invisible)
+    {
+        return Ok(None);
+    }
+    let (root, summary) = svg_render::render_value(&document, &settings, resolver)?;
+    Ok(Some((images::prepare(&root), summary)))
+}
+
 fn map_vec2(value: Option<&Value>, default: (f64, f64)) -> (f64, f64) {
     match value {
         Some(Value::Vector { values, .. }) if values.len() >= 2 => {
@@ -3315,6 +3359,48 @@ fn optional_width_control(ui: &mut egui::Ui, label: &str, value: &mut Option<f32
             ui.add(egui::DragValue::new(width).range(0.0..=100.0));
         } else {
             ui.small("Use SVG value");
+        }
+    });
+}
+
+fn freshwater_style_controls(ui: &mut egui::Ui, row: &mut svg_render::ClassSettings) {
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    let mut apply_fill = row.fill_override.is_some();
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut apply_fill, "Apply fill").changed() {
+            row.fill_override = apply_fill.then_some(RED);
+            if apply_fill {
+                row.no_fill_override = false;
+            }
+        }
+        if let Some(fill) = &mut row.fill_override {
+            color_control(ui, "Fill", fill);
+        } else if row.no_fill_override {
+            ui.small("Fill: none");
+        } else {
+            ui.small("Fill: SVG value");
+        }
+    });
+
+    let mut border_width = row.border_width_override.unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        ui.label("Border width");
+        if ui
+            .add(egui::DragValue::new(&mut border_width).range(0.0..=100.0))
+            .changed()
+        {
+            if border_width == 0.0 {
+                row.border_width_override = None;
+                row.border_override = None;
+            } else {
+                row.border_width_override = Some(border_width);
+                row.border_override.get_or_insert(RED);
+            }
+        }
+        if let Some(border) = &mut row.border_override {
+            color_control(ui, "Border", border);
+        } else {
+            ui.small("Border: none");
         }
     });
 }
@@ -4024,6 +4110,56 @@ mod tests {
                 .len()
         );
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn import_svg_from_an_empty_editor_creates_layermap_data() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("testfiles/layermap.svg");
+        let (prepared, summary) = quick_import_svg(&fixture, &Resolver::new(&Settings::default()))
+            .expect("quick SVG import should render layermap")
+            .expect("layermap should match the built-in layer mapping");
+        assert_eq!((summary.labels, summary.symbols, summary.paths), (1, 5, 1));
+        assert_eq!(prepared.images.len(), 3);
+        assert_eq!(
+            prepared.editable.get("mask").and_then(Value::as_str),
+            Some(".mask.png")
+        );
+        assert_eq!(
+            prepared.editable.get("ground").and_then(Value::as_str),
+            Some(".ground.png")
+        );
+        assert_eq!(
+            prepared.editable.get("water_tint").and_then(Value::as_str),
+            Some(".water_tint.png")
+        );
+        for (key, filename) in [
+            ("ground", "layermap.ground.png"),
+            ("mask", "layermap.mask.png"),
+            ("water_tint", "layermap.water_tint.png"),
+        ] {
+            let expected = image::open(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("testfiles")
+                    .join(filename),
+            )
+            .unwrap()
+            .to_rgba8();
+            let (_, value) = prepared
+                .images
+                .iter()
+                .find(|(image_key, _)| image_key == key)
+                .unwrap();
+            let actual = image_info(value).unwrap();
+            assert_eq!((actual.width, actual.height), expected.dimensions());
+            assert_eq!(
+                actual
+                    .pixels
+                    .read_slice(0, actual.pixels.len() as usize)
+                    .unwrap(),
+                expected.as_raw().as_slice(),
+                "{key} image differs from {filename}"
+            );
+        }
     }
 
     #[test]
