@@ -27,6 +27,33 @@ Full usage documentation is available in the
 [project wiki](https://github.com/Glumbosch/miracledraft_map_helper/wiki),
 including a [function and keyboard-shortcut reference](https://github.com/Glumbosch/miracledraft_map_helper/wiki/Functions-and-Keyboard-Shortcuts).
 
+## Changes since v0.4.6
+
+The current release is based on the stable v0.4.6 release. **v0.4.7 was a
+buggy intermediate release and should be skipped.** Since v0.4.6, the main
+changes are:
+
+- Added a native **Inkarnate v3 JSON backup → layered SVG** converter. It
+  recovers the preview, island mask, paths, text, and grid without requiring
+  Python. The generated SVG can be opened with **Render SVG…** and used as the
+  basis for a new Wonderdraft map.
+- Added a full SVG renderer with viewport controls, per-layer/class settings,
+  render-settings save/load, color filters, and tracing-image support. The
+  Inkarnate preview layer can be used as a tracing image while rebuilding a
+  map in Wonderdraft.
+- Improved SVG and layermap handling, including mask/import workflows and
+  more reliable Wonderdraft layer rendering.
+- Added a symbol asset gallery and expanded Wonderdraft asset resolution,
+  including better support for extracted core and custom assets.
+- Added CSV-based map rendering and additional SVG export/import test
+  fixtures.
+- Expanded the documentation with SVG editing, map-data syntax, file-format,
+  renderer, and troubleshooting guidance.
+
+For the complete history, see the commits between
+[`v0.4.6`](https://github.com/Glumbosch/miracledraft_map_helper/releases/tag/v0.4.6)
+and the [latest release](https://github.com/Glumbosch/miracledraft_map_helper/releases/latest).
+
 ## Screenshots
 
 ### Main editor
