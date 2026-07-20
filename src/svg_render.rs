@@ -1623,13 +1623,7 @@ pub fn render_preview(source: &Path, output: &Path, width: u32, height: u32) -> 
     render_external(source, output, width, height)
 }
 fn command_exists(tool: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg("command -v \"$1\" >/dev/null 2>&1")
-        .arg("sh")
-        .arg(tool)
-        .status()
-        .is_ok_and(|s| s.success())
+    Command::new(tool).arg("--version").output().is_ok()
 }
 fn inject_style(source: &str, css: &str) -> Result<String> {
     let at = source

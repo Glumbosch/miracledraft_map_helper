@@ -55,11 +55,14 @@ most recent files remembered by the editor.
 
 ## Inkarnate workflow
 
-Choose **Inkarnate → SVG…**, select an Inkarnate v3 JSON backup, and select an
-SVG destination. The native converter recovers the preview image, land mask,
-paths, text, and grid into named SVG layers. Open that SVG with **Render SVG…**.
-To keep the original artwork visible while you configure the conversion, select
-the `Preview` layer and enable **Use this layer/class as tracing image**.
+Choose **Inkarnate → SVG…** and select an Inkarnate v3 JSON backup or a
+gzip-compressed `.ink` export. You can export the generated SVG first, or
+choose **Inkarnate to .wonderdraft_map…** to open it directly in the renderer.
+The native converter recovers the preview image, land mask, paths, text, and
+grid into named SVG layers. To keep the original artwork visible while you
+configure the conversion, select the `Preview` layer and enable **Use this
+layer/class as tracing image**. See [Inkarnate and CSV Import](Inkarnate-and-CSV-Import)
+for the complete workflow.
 
 This converts recoverable map data, not every Inkarnate asset and effect. The
 preview is useful as a visual guide; paths and labels can be rendered as
@@ -82,3 +85,6 @@ Both workflows open a separate renderer window:
 For an SVG, assign text to the **label** category to create Wonderdraft
 labels. For CSV input, map a column to **Label content**. Open paths remain
 open when CSV rows are tagged as `path`, `polyline`, or `line`.
+
+The [Translation Settings](translation%20settings) page explains every
+renderer category and its per-row options.

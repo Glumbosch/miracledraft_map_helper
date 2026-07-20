@@ -329,9 +329,45 @@ or lines remain open rather than being converted into filled closed polygons.
 Ground and water-tint classes are
 composited into their own full-size transparent image layers.
 
-Raster classes use a small external renderer to keep the executable compact.
-On Linux install one of `resvg`, `rsvg-convert`/librsvg, or Inkscape. Headless
-Google Chrome or Chromium is also supported.
+### SVG renderer dependency
+
+**Render SVG…**, **Render from CSV…**, and the preview panes need an external
+SVG-to-PNG renderer. The application automatically uses the first available
+tool in this order: `resvg`, `rsvg-convert` (from librsvg), `inkscape`, then
+Google Chrome or Chromium. Installing [Inkscape](https://inkscape.org/release/)
+is the simplest, most complete option on both Linux and Windows.
+
+On Linux, install any one renderer and restart the helper after installation:
+
+```bash
+# Debian / Ubuntu: Inkscape (recommended)
+sudo apt update && sudo apt install inkscape
+
+# Fedora
+sudo dnf install inkscape
+
+# Arch Linux
+sudo pacman -S inkscape
+```
+
+Alternatively, install your distribution's `resvg` package or `librsvg`
+package (which provides `rsvg-convert`). Chrome/Chromium can also be used
+headlessly when its executable is on `PATH`.
+
+On Windows, install the current 64-bit Inkscape MSI from the
+[official download page](https://inkscape.org/release/), or run this in an
+Administrator PowerShell window when WinGet is available:
+
+```powershell
+winget install Inkscape.Inkscape
+```
+
+Restart the helper afterwards. If it still reports that no renderer is found,
+add the folder containing `inkscape.exe` (commonly
+`C:\Program Files\Inkscape\bin`) to your user `PATH`, restart the helper, and
+verify it in a new Command Prompt with `where inkscape`. The helper also
+recognizes `resvg`, `rsvg-convert`, `google-chrome`, `chromium`, and
+`chromium-browser` when their executable is on `PATH`.
 
 ## SVG round trip
 
