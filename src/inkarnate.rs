@@ -1,15 +1,17 @@
 //! Convert the recoverable vector content of an Inkarnate v3 backup to SVG.
 
 use crate::{Error, Result};
+use flate2::read::GzDecoder;
 use serde_json::{Map, Value};
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
+    io::Read,
     path::Path,
 };
 
 pub fn convert(source: &Path, destination: &Path) -> Result<()> {
-    let document: Value = serde_json::from_slice(&fs::read(source).map_err(io_error)?)
+    let document: Value = serde_json::from_slice(&read_backup(source)?)
         .map_err(|error| Error::format(error.to_string()))?;
     let scene = object(&document, "scene")?;
     let size = scene
@@ -69,6 +71,24 @@ pub fn convert(source: &Path, destination: &Path) -> Result<()> {
     svg.extend(layer("Grid", &grid, true));
     svg.push("</svg>".into());
     fs::write(destination, svg.join("\n")).map_err(io_error)
+}
+
+/// Reads either an ordinary JSON backup or Inkarnate's gzip-compressed `.ink`
+/// export format. Detecting the gzip magic bytes also keeps renamed archives
+/// working without relying on their file extension.
+fn read_backup(source: &Path) -> Result<Vec<u8>> {
+    let bytes = fs::read(source).map_err(io_error)?;
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut decoded = Vec::new();
+        GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut decoded)
+            .map_err(|error| {
+                Error::format(format!("Could not decompress Inkarnate backup: {error}"))
+            })?;
+        Ok(decoded)
+    } else {
+        Ok(bytes)
+    }
 }
 
 fn io_error(error: std::io::Error) -> Error {
@@ -413,6 +433,8 @@ fn render_grid(entity: &Value, width: f64, height: f64) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
 
     #[test]
     fn converts_basic_backup_without_external_runtime() {
@@ -425,6 +447,26 @@ mod tests {
         assert!(svg.contains("inkscape:label=\"Text\""));
         assert!(svg.contains("Harbor"));
         assert!(svg.contains("font-family=\"Lancelot\""));
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(destination);
+    }
+
+    #[test]
+    fn converts_gzip_compressed_ink_backup() {
+        let source =
+            std::env::temp_dir().join(format!("inkarnate-gzip-{}.ink", std::process::id()));
+        let destination = source.with_extension("svg");
+        let json = br#"{"scene":{"normSceneSize":{"w":100,"h":80}}}"#;
+        let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+        compressed.write_all(json).unwrap();
+        fs::write(&source, compressed.finish().unwrap()).unwrap();
+
+        convert(&source, &destination).unwrap();
+        assert!(
+            fs::read_to_string(&destination)
+                .unwrap()
+                .contains("width=\"100\"")
+        );
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(destination);
     }

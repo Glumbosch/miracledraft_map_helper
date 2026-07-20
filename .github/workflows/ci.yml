@@ -38,8 +38,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run tests
-        run: cargo test --locked --all-targets
+      - name: Run public-fixture tests
+        # These integration checks use user-provided fixture maps that are not
+        # committed to the public repository. Keep them available for local
+        # validation, but do not run them in GitHub Actions.
+        run: >-
+          cargo test --locked --all-targets --
+          --skip inkarnate::tests::supplied_backup_matches_reference_island_mask_structure
+          --skip svg::tests::export_svg_matches_basic_map_fixture_except_for_xlink_hrefs
+          --skip svg_render::tests::fresh_water_csv_export_writes_visible_pixels_to_the_mask
+          --skip svg_render::tests::layermap_json_settings_render_a_valid_mask_image
 
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings

@@ -25,7 +25,7 @@ the text area has focus. They are not application-specific global shortcuts.
 | **Save map as…** | Rebuilds the map from the current text, embedded images, and binary data, then writes a new `.wonderdraft_map`. |
 | **Export SVG…** | Exports the enabled map layers to SVG using the current embedding settings. |
 | **Import SVG…** | Reads supported SVG elements and their `wd:*` metadata into the currently open map data. Save afterward to create a map file. |
-| **Inkarnate → SVG…** | Converts an Inkarnate v3 JSON backup into a layered SVG without requiring Python. The SVG can then be rendered as a new Wonderdraft map. |
+| **Inkarnate → SVG…** | Accepts an Inkarnate v3 JSON backup or gzip-compressed `.ink` export. Choose either an SVG destination or open the conversion directly in the renderer to create a new Wonderdraft map. |
 | **Render SVG…** | Opens an SVG in the renderer so selected classes or Inkscape layers can be converted into a new Wonderdraft map. |
 | **Render from CSV…** | Imports a delimited table (`.csv`, `.tsv`, or `.txt`), lets you assign coordinate and style columns, and opens it in the renderer. |
 | **Export map data…** | Writes the currently displayed Godot text to a plain `.txt` file. |
@@ -74,6 +74,10 @@ The CSV importer detects UTF-8 and can fall back to Windows-1252, and can infer
 comma, tab, or other delimiters. Assign columns for X/Y coordinates, geometry
 type, class/category, color, width, opacity, and label content. Rows tagged as
 `path`, `polyline`, or `line` remain open.
+
+See [Inkarnate and CSV Import](Inkarnate-and-CSV-Import) for illustrated
+workflows and [Translation Settings](translation%20settings) for every output
+category.
 
 ## Save and SVG options
 
