@@ -90,6 +90,7 @@ struct App {
     csv_importer: Option<CsvImporterWindow>,
     svg_renderer: Option<SvgRendererWindow>,
     svg_render_job: Option<Receiver<(PathBuf, Result<svg_render::RenderSummary>)>>,
+    inkarnate_import: Option<InkarnateImportWindow>,
 }
 
 struct SvgRendererWindow {
@@ -169,6 +170,10 @@ struct CsvImporterWindow {
     map_width: u32,
     map_height: u32,
     error: Option<String>,
+}
+
+struct InkarnateImportWindow {
+    source: PathBuf,
 }
 
 #[derive(Clone)]
@@ -300,6 +305,7 @@ impl Default for App {
             csv_importer: None,
             svg_renderer: None,
             svg_render_job: None,
+            inkarnate_import: None,
         }
     }
 }
@@ -404,7 +410,7 @@ impl App {
                     .pick_file(),
                 DialogAction::InkarnateBackup => rfd::FileDialog::new()
                     .set_directory(open_directory.clone().unwrap_or_default())
-                    .add_filter("Inkarnate backup", &["json"])
+                    .add_filter("Inkarnate backup", &["ink", "json"])
                     .pick_file(),
                 DialogAction::SaveInkarnateSvg { file_name, .. } => rfd::FileDialog::new()
                     .set_directory(open_directory.clone().unwrap_or_default())
@@ -641,17 +647,7 @@ impl App {
             DialogAction::RenderSvg => self.open_svg_renderer(path, ctx),
             DialogAction::RenderCsv => self.open_csv_importer(path),
             DialogAction::InkarnateBackup => {
-                let file_name = format!(
-                    "{}.svg",
-                    path.file_stem().unwrap_or_default().to_string_lossy()
-                );
-                self.begin_dialog(
-                    DialogAction::SaveInkarnateSvg {
-                        source: path,
-                        file_name,
-                    },
-                    ctx,
-                );
+                self.open_inkarnate_import_choice(path);
                 return;
             }
             DialogAction::SaveInkarnateSvg { source, .. } => {
@@ -1403,6 +1399,28 @@ impl App {
         self.status = format!("Converted Inkarnate backup to {}", destination.display());
         Ok(())
     }
+
+    fn open_inkarnate_import_choice(&mut self, source: PathBuf) {
+        self.inkarnate_import = Some(InkarnateImportWindow { source });
+    }
+
+    fn begin_inkarnate_svg_export(&mut self, source: PathBuf, ctx: &egui::Context) {
+        let file_name = format!(
+            "{}.svg",
+            source.file_stem().unwrap_or_default().to_string_lossy()
+        );
+        self.begin_dialog(DialogAction::SaveInkarnateSvg { source, file_name }, ctx);
+    }
+
+    fn open_inkarnate_renderer(&mut self, source: &Path, ctx: &egui::Context) -> Result<()> {
+        let temporary_dir = images::temp_cache_dir(&self.cache_dir)?;
+        let temporary_svg = temporary_dir.join("inkarnate-import.svg");
+        let result = inkarnate::convert(source, &temporary_svg)
+            .and_then(|()| self.open_svg_renderer(temporary_svg, ctx));
+        let _ = fs::remove_dir_all(temporary_dir);
+        result
+    }
+
     fn open_render_document(
         &mut self,
         document: svg_render::Document,
@@ -2511,6 +2529,47 @@ impl App {
 }
 
 impl App {
+    fn show_inkarnate_import(&mut self, ctx: &egui::Context) {
+        let Some(source) = self
+            .inkarnate_import
+            .as_ref()
+            .map(|window| window.source.clone())
+        else {
+            return;
+        };
+        let mut open = true;
+        let mut export_svg = false;
+        let mut render_map = false;
+        egui::Window::new("Import Inkarnate backup")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(source.file_name().unwrap_or_default().to_string_lossy());
+                ui.add_space(6.0);
+                ui.label("Choose what to create from this Inkarnate backup:");
+                ui.add_space(6.0);
+                if ui.button("Export Inkarnate file to SVG…").clicked() {
+                    export_svg = true;
+                }
+                if ui.button("Inkarnate to .wonderdraft_map…").clicked() {
+                    render_map = true;
+                }
+            });
+
+        if export_svg {
+            self.inkarnate_import = None;
+            self.begin_inkarnate_svg_export(source, ctx);
+        } else if render_map {
+            self.inkarnate_import = None;
+            if let Err(error) = self.open_inkarnate_renderer(&source, ctx) {
+                self.fail("Could not convert Inkarnate backup", error);
+            }
+        } else if !open {
+            self.inkarnate_import = None;
+        }
+    }
+
     fn show_overwrite_prompt(&mut self, ctx: &egui::Context) {
         let Some(path) = self.overwrite_prompt.clone() else {
             return;
@@ -2562,7 +2621,16 @@ impl eframe::App for App {
         let mut recent_selection = None;
         egui::Panel::top("toolbar").show(root_ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let open_map = ui.add_enabled(!busy, egui::Button::new("Open map"));
+                let map_drag_active = has_hovered_file(ui.ctx(), is_wonderdraft_map);
+                let open_map = ui.add_enabled(
+                    !busy,
+                    drag_feedback_button(
+                        ui,
+                        map_drag_active,
+                        "Open map",
+                        "Drop Wonderdraft map here",
+                    ),
+                );
                 if open_map.clicked() {
                     self.begin_dialog(DialogAction::OpenMap, &ctx);
                 }
@@ -2652,7 +2720,13 @@ impl eframe::App for App {
                         &ctx,
                     );
                 }
-                let import_svg = ui.button("Import SVG…");
+                let svg_drag_active = has_hovered_file(ui.ctx(), is_svg_file);
+                let import_svg = ui.add(drag_feedback_button(
+                    ui,
+                    svg_drag_active,
+                    "Import SVG…",
+                    "Drop to Import SVG here",
+                ));
                 if import_svg.clicked() {
                     self.begin_dialog(DialogAction::ImportSvg, &ctx);
                 }
@@ -2661,7 +2735,12 @@ impl eframe::App for App {
                         self.fail("Could not import SVG", error);
                     }
                 }
-                let render_svg = ui.button("Render SVG…");
+                let render_svg = ui.add(drag_feedback_button(
+                    ui,
+                    svg_drag_active,
+                    "Render SVG…",
+                    "Drop here to render SVG",
+                ));
                 if render_svg.clicked() {
                     self.begin_dialog(DialogAction::RenderSvg, &ctx);
                 }
@@ -2670,10 +2749,26 @@ impl eframe::App for App {
                         self.fail("Could not open SVG renderer", error);
                     }
                 }
-                if ui.button("Inkarnate → SVG…").clicked() {
+                let inkarnate_drag_active = has_hovered_file(ui.ctx(), is_inkarnate_backup);
+                let inkarnate_svg = ui.add(drag_feedback_button(
+                    ui,
+                    inkarnate_drag_active,
+                    "Inkarnate to SVG…",
+                    "Drop .ink here",
+                ));
+                if inkarnate_svg.clicked() {
                     self.begin_dialog(DialogAction::InkarnateBackup, &ctx);
                 }
-                let render_csv = ui.button("Render from CSV…");
+                if let Some(path) = dropped_path_over(ui, &inkarnate_svg, is_inkarnate_backup) {
+                    self.open_inkarnate_import_choice(path);
+                }
+                let csv_drag_active = has_hovered_file(ui.ctx(), is_csv_file);
+                let render_csv = ui.add(drag_feedback_button(
+                    ui,
+                    csv_drag_active,
+                    "Render from CSV…",
+                    "Drop CSV here",
+                ));
                 if render_csv.clicked() {
                     self.begin_dialog(DialogAction::RenderCsv, &ctx);
                 }
@@ -2767,6 +2862,7 @@ impl eframe::App for App {
         self.show_full_render_preview(&ctx);
         self.show_symbol_gallery(&ctx);
         self.show_overwrite_prompt(&ctx);
+        self.show_inkarnate_import(&ctx);
         egui::Panel::right("images")
             .resizable(true)
             .default_size(280.)
@@ -3973,6 +4069,7 @@ fn load_draw_mode_icons(
             ),
         );
     }
+
     icons
 }
 
@@ -4088,6 +4185,30 @@ fn dropped_path_over(
     })
 }
 
+fn has_hovered_file(ctx: &egui::Context, accepts: impl Fn(&Path) -> bool) -> bool {
+    ctx.input(|input| {
+        input
+            .raw
+            .hovered_files
+            .iter()
+            .filter_map(|file| file.path.as_deref())
+            .any(accepts)
+    })
+}
+
+fn drag_feedback_button<'a>(
+    ui: &egui::Ui,
+    drag_active: bool,
+    normal_text: &'a str,
+    drop_text: &'a str,
+) -> egui::Button<'a> {
+    egui::Button::new(if drag_active { drop_text } else { normal_text }).fill(if drag_active {
+        egui::Color32::from_rgb(62, 110, 80)
+    } else {
+        ui.visuals().widgets.inactive.bg_fill
+    })
+}
+
 fn is_extension(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -4108,6 +4229,10 @@ fn is_csv_file(path: &Path) -> bool {
 
 fn is_json_file(path: &Path) -> bool {
     is_extension(path, &["json"])
+}
+
+fn is_inkarnate_backup(path: &Path) -> bool {
+    is_extension(path, &["ink", "json"])
 }
 
 fn main() -> eframe::Result {
